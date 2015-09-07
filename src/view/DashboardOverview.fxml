@@ -1,0 +1,260 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<?import javafx.scene.shape.*?>
+<?import javafx.scene.chart.*?>
+<?import javafx.scene.text.*?>
+<?import javafx.geometry.*?>
+<?import java.lang.*?>
+<?import javafx.scene.control.*?>
+<?import javafx.scene.layout.*?>
+<?import javafx.scene.layout.AnchorPane?>
+
+<AnchorPane prefHeight="618.0" prefWidth="800.0" styleClass="background" stylesheets="@DarkTheme.css" xmlns="http://javafx.com/javafx/8.0.40" xmlns:fx="http://javafx.com/fxml/1" fx:controller="application.Controller">
+   <children>
+      <Label layoutX="29.0" layoutY="14.0" prefHeight="66.0" prefWidth="152.0" styleClass="logo">
+         <font>
+            <Font size="31.0" />
+         </font>
+      </Label>
+      <GridPane layoutX="400.0" layoutY="37.0" prefHeight="30.0" prefWidth="318.0">
+        <columnConstraints>
+          <ColumnConstraints hgrow="SOMETIMES" minWidth="10.0" prefWidth="150.0" />
+          <ColumnConstraints hgrow="SOMETIMES" minWidth="10.0" prefWidth="200.0" />
+        </columnConstraints>
+        <rowConstraints>
+          <RowConstraints minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+        </rowConstraints>
+         <children>
+            <TextField fx:id="searchBar" prefHeight="32.0" prefWidth="220.0" GridPane.columnIndex="1" />
+            <Label id="searchLabel" prefHeight="20.0" prefWidth="264.0" text="Enter airport code:" />
+         </children>
+      </GridPane>
+      <Button id="searchImg" layoutX="718.0" layoutY="36.0" mnemonicParsing="false" onAction="#handleSearchAirport" />
+      <TabPane layoutY="83.0" prefHeight="541.0" prefWidth="800.0" styleClass="tabs" AnchorPane.bottomAnchor="0.0" AnchorPane.leftAnchor="0.0" AnchorPane.rightAnchor="0.0" AnchorPane.topAnchor="77.0">
+        <tabs>
+          <Tab closable="false" styleClass="tabBar" text="Data">
+            <content>
+              <AnchorPane minHeight="0.0" minWidth="0.0" prefHeight="525.0" prefWidth="800.0">
+                     <children>
+                        <Label layoutX="147.0" layoutY="86.0" styleClass="boldedLabel" text="General Data">
+                           <font>
+                              <Font name="System Bold" size="13.0" />
+                           </font>
+                        </Label>
+                        <Label layoutX="553.0" layoutY="75.0" styleClass="boldedLabel" text="Delayed Flights">
+                           <font>
+                              <Font name="System Bold" size="13.0" />
+                           </font>
+                        </Label>
+                        <GridPane layoutX="50.0" layoutY="106.0" prefHeight="53.0" prefWidth="416.0" styleClass="general">
+                          <columnConstraints>
+                            <ColumnConstraints hgrow="SOMETIMES" minWidth="10.0" prefWidth="100.0" />
+                            <ColumnConstraints hgrow="SOMETIMES" minWidth="10.0" prefWidth="100.0" />
+                          </columnConstraints>
+                          <rowConstraints>
+                            <RowConstraints minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                            <RowConstraints minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                          </rowConstraints>
+                           <children>
+                              <Label id="general" text="Daily Flights (National):">
+                                 <GridPane.margin>
+                                    <Insets left="10.0" />
+                                 </GridPane.margin>
+                              </Label>
+                              <Label text="Daily Flights (International):" GridPane.rowIndex="1">
+                                 <GridPane.margin>
+                                    <Insets left="10.0" />
+                                 </GridPane.margin>
+                              </Label>
+                              <Label fx:id="general1" text="Label" GridPane.columnIndex="1" />
+                              <Label fx:id="general2" text="Label" GridPane.columnIndex="1" GridPane.rowIndex="1" />
+                           </children>
+                        </GridPane>
+                        <Label layoutX="50.0" layoutY="208.0" styleClass="boldedLabel" text="Top 8 Busiest Airports">
+                           <font>
+                              <Font name="System Bold" size="13.0" />
+                           </font>
+                        </Label>
+                        <GridPane layoutX="22.0" layoutY="236.0" prefHeight="240.0" prefWidth="256.0">
+                          <columnConstraints>
+                            <ColumnConstraints hgrow="SOMETIMES" minWidth="10.0" prefWidth="100.0" />
+                            <ColumnConstraints hgrow="SOMETIMES" minWidth="10.0" prefWidth="100.0" />
+                          </columnConstraints>
+                          <rowConstraints>
+                              <RowConstraints minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                            <RowConstraints minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                            <RowConstraints minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                            <RowConstraints minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                              <RowConstraints minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                              <RowConstraints minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                              <RowConstraints minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                              <RowConstraints minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                              <RowConstraints minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                          </rowConstraints>
+                           <children>
+                              <Label fx:id="busiest1name" text="Airport 1" GridPane.rowIndex="1" />
+                              <Label fx:id="busiest2name" text="Airport 2" GridPane.rowIndex="2" />
+                              <Label fx:id="busiest3name" text="Airport 3" GridPane.rowIndex="3" />
+                              <Label fx:id="busiest4name" text="Airport 4" GridPane.rowIndex="4" />
+                              <Label fx:id="busiest5name" text="Airport 5" GridPane.rowIndex="5" />
+                              <Label fx:id="busiest6name" text="Airport 6" GridPane.rowIndex="6" />
+                              <Label fx:id="busiest7name" text="Airport 7" GridPane.rowIndex="7" />
+                              <Label fx:id="busiest8name" text="Airport 8" GridPane.rowIndex="8" />
+                              <Label fx:id="busiest1flights" text="Label" GridPane.columnIndex="1" GridPane.rowIndex="1" />
+                              <Label fx:id="busiest2flights" text="Label" GridPane.columnIndex="1" GridPane.rowIndex="2" />
+                              <Label fx:id="busiest3flights" text="Label" GridPane.columnIndex="1" GridPane.rowIndex="3" />
+                              <Label fx:id="busiest4flights" text="Label" GridPane.columnIndex="1" GridPane.rowIndex="4" />
+                              <Label fx:id="busiest5flights" text="Label" GridPane.columnIndex="1" GridPane.rowIndex="5" />
+                              <Label fx:id="busiest6flights" text="Label" GridPane.columnIndex="1" GridPane.rowIndex="6" />
+                              <Label fx:id="busiest7flights" text="Label" GridPane.columnIndex="1" GridPane.rowIndex="7" />
+                              <Label fx:id="busiest8flights" text="Label" GridPane.columnIndex="1" GridPane.rowIndex="8" />
+                              <Label text="Airport Code" />
+                              <Label text="# of Flights" GridPane.columnIndex="1" />
+                           </children>
+                        </GridPane>
+                        <GridPane layoutX="489.0" layoutY="93.0" prefHeight="78.0" prefWidth="264.0">
+                           <columnConstraints>
+                              <ColumnConstraints hgrow="SOMETIMES" minWidth="10.0" prefWidth="100.0" />
+                              <ColumnConstraints hgrow="SOMETIMES" minWidth="10.0" prefWidth="100.0" />
+                           </columnConstraints>
+                           <rowConstraints>
+                              <RowConstraints minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                              <RowConstraints minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                              <RowConstraints minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                           </rowConstraints>
+                           <children>
+                              <Label text="10 minutes:" />
+                              <Label prefHeight="17.0" prefWidth="130.0" text="10-30 minutes:" GridPane.rowIndex="1" />
+                              <Label text="&gt; 30 minutes:" GridPane.rowIndex="2" />
+                              <Label fx:id="delay10mins" style="-fx-text-fill: #33CC33;" text="Label" GridPane.columnIndex="1" GridPane.halignment="CENTER" />
+                              <Label fx:id="delay10to30mins" style="-fx-text-fill: #FFFF99;" text="Label" GridPane.columnIndex="1" GridPane.halignment="CENTER" GridPane.rowIndex="1" />
+                              <Label fx:id="delaymorethan30mins" style="-fx-text-fill: #FF3300;" text="Label" GridPane.columnIndex="1" GridPane.halignment="CENTER" GridPane.rowIndex="2" />
+                           </children>
+                        </GridPane>
+                        <GridPane layoutX="245.0" layoutY="236.0" prefHeight="241.0" prefWidth="357.0">
+                           <columnConstraints>
+                              <ColumnConstraints hgrow="SOMETIMES" minWidth="10.0" prefWidth="100.0" />
+                              <ColumnConstraints hgrow="SOMETIMES" minWidth="10.0" prefWidth="100.0" />
+                           </columnConstraints>
+                           <rowConstraints>
+                              <RowConstraints minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                              <RowConstraints minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                              <RowConstraints maxHeight="30.0" minHeight="10.0" prefHeight="28.0" vgrow="SOMETIMES" />
+                              <RowConstraints maxHeight="31.0" minHeight="10.0" prefHeight="27.0" vgrow="SOMETIMES" />
+                              <RowConstraints maxHeight="30.0" minHeight="10.0" prefHeight="29.0" vgrow="SOMETIMES" />
+                              <RowConstraints minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                              <RowConstraints minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                              <RowConstraints minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                              <RowConstraints minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                           </rowConstraints>
+                           <children>
+                              <Label fx:id="airline1name" text="Airport 1" GridPane.rowIndex="1" />
+                              <Label fx:id="airline2name" text="Airport 2" GridPane.rowIndex="2" />
+                              <Label fx:id="airline3name" text="Airport 3" GridPane.rowIndex="3" />
+                              <Label fx:id="airline4name" text="Airport 4" GridPane.rowIndex="4" />
+                              <Label fx:id="airline5name" text="Airport 5" GridPane.rowIndex="5" />
+                              <Label fx:id="airline6name" text="Airport 6" GridPane.rowIndex="6" />
+                              <Label fx:id="airline7name" text="Airport 7" GridPane.rowIndex="7" />
+                              <Label fx:id="airline8name" text="Airport 8" GridPane.rowIndex="8" />
+                              <Label fx:id="airline1flights" text="Label" GridPane.columnIndex="1" GridPane.halignment="LEFT" GridPane.rowIndex="1" />
+                              <Label fx:id="airline2flights" text="Label" GridPane.columnIndex="1" GridPane.halignment="LEFT" GridPane.rowIndex="2" />
+                              <Label fx:id="airline3flights" text="Label" GridPane.columnIndex="1" GridPane.halignment="LEFT" GridPane.rowIndex="3" />
+                              <Label fx:id="airline4flights" text="Label" GridPane.columnIndex="1" GridPane.halignment="LEFT" GridPane.rowIndex="4" />
+                              <Label fx:id="airline5flights" text="Label" GridPane.columnIndex="1" GridPane.halignment="LEFT" GridPane.rowIndex="5" />
+                              <Label fx:id="airline6flights" text="Label" GridPane.columnIndex="1" GridPane.halignment="LEFT" GridPane.rowIndex="6" />
+                              <Label fx:id="airline7flights" text="Label" GridPane.columnIndex="1" GridPane.halignment="LEFT" GridPane.rowIndex="7" />
+                              <Label fx:id="airline8flights" text="Label" GridPane.columnIndex="1" GridPane.halignment="LEFT" GridPane.rowIndex="8" />
+                              <Label text="Airline" />
+                              <Label text="# of Flights" GridPane.columnIndex="1" GridPane.halignment="LEFT" />
+                           </children>
+                        </GridPane>
+                        <GridPane alignment="CENTER" layoutX="536.0" layoutY="236.0" prefHeight="240.0" prefWidth="265.0">
+                           <columnConstraints>
+                              <ColumnConstraints hgrow="SOMETIMES" minWidth="10.0" prefWidth="100.0" />
+                              <ColumnConstraints hgrow="SOMETIMES" minWidth="10.0" prefWidth="100.0" />
+                           </columnConstraints>
+                           <rowConstraints>
+                              <RowConstraints minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                              <RowConstraints minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                              <RowConstraints minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                              <RowConstraints maxHeight="30.0" minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                              <RowConstraints maxHeight="30.0" minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                              <RowConstraints minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                              <RowConstraints minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                              <RowConstraints minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                              <RowConstraints minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+                           </rowConstraints>
+                           <children>
+                              <Label fx:id="plane1name" text="Airport 1" GridPane.halignment="LEFT" GridPane.rowIndex="1" />
+                              <Label fx:id="plane2name" text="Airport 2" GridPane.halignment="LEFT" GridPane.rowIndex="2" />
+                              <Label fx:id="plane3name" text="Airport 3" GridPane.halignment="LEFT" GridPane.rowIndex="3" />
+                              <Label fx:id="plane4name" text="Airport 4" GridPane.halignment="LEFT" GridPane.rowIndex="4" />
+                              <Label fx:id="plane5name" text="Airport 5" GridPane.halignment="LEFT" GridPane.rowIndex="5" />
+                              <Label fx:id="plane6name" text="Airport 6" GridPane.halignment="LEFT" GridPane.rowIndex="6" />
+                              <Label fx:id="plane7name" text="Airport 7" GridPane.halignment="LEFT" GridPane.rowIndex="7" />
+                              <Label fx:id="plane8name" text="Airport 8" GridPane.halignment="LEFT" GridPane.rowIndex="8" />
+                              <Label fx:id="plane1flights" text="Label" GridPane.columnIndex="1" GridPane.halignment="CENTER" GridPane.rowIndex="1" />
+                              <Label fx:id="plane2flights" text="Label" GridPane.columnIndex="1" GridPane.halignment="CENTER" GridPane.rowIndex="2" />
+                              <Label fx:id="plane3flights" text="Label" GridPane.columnIndex="1" GridPane.halignment="CENTER" GridPane.rowIndex="3" />
+                              <Label fx:id="plane4flights" text="Label" GridPane.columnIndex="1" GridPane.halignment="CENTER" GridPane.rowIndex="4" />
+                              <Label fx:id="plane5flights" text="Label" GridPane.columnIndex="1" GridPane.halignment="CENTER" GridPane.rowIndex="5" />
+                              <Label fx:id="plane6flights" text="Label" GridPane.columnIndex="1" GridPane.halignment="CENTER" GridPane.rowIndex="6" />
+                              <Label fx:id="plane7flights" text="Label" GridPane.columnIndex="1" GridPane.halignment="CENTER" GridPane.rowIndex="7" />
+                              <Label fx:id="plane8flights" text="Label" GridPane.columnIndex="1" GridPane.halignment="CENTER" GridPane.rowIndex="8" />
+                              <Label alignment="CENTER" contentDisplay="CENTER" text="Plane Type" GridPane.halignment="LEFT" />
+                              <Label text="# of Planes" GridPane.columnIndex="1" GridPane.halignment="CENTER" />
+                           </children>
+                        </GridPane>
+                        <Label layoutX="320.0" layoutY="208.0" styleClass="boldedLabel" text="Top 8 Airlines">
+                           <font>
+                              <Font name="System Font Bold" size="13.0" />
+                           </font>
+                        </Label>
+                        <Label layoutX="605.0" layoutY="208.0" styleClass="boldedLabel" text="Top 8 Plane Types">
+                           <font>
+                              <Font name="System Font Bold" size="13.0" />
+                           </font>
+                        </Label>
+                        <Label layoutX="258.0" prefHeight="66.0" prefWidth="297.0" styleClass="globalFlightHeader" />
+                        <Label fx:id="dateTime1" layoutX="360.0" layoutY="54.0" text="May 22, 2015">
+                           <font>
+                              <Font name="System Bold" size="13.0" />
+                           </font></Label>
+                        <Line endX="100.0" endY="275.0" layoutX="130.0" layoutY="213.0" startX="100.0" />
+                        <Line endX="375.0" endY="275.0" layoutX="140.0" layoutY="213.0" startX="375.0" />
+                     </children>
+                  </AnchorPane>
+            </content>
+          </Tab>
+          <Tab closable="false" styleClass="tabBar" text="Charts">
+            <content>
+              <AnchorPane minHeight="0.0" minWidth="0.0" prefHeight="180.0" prefWidth="200.0">
+                     <children>
+                        <PieChart id="topAirlines" fx:id="topAirlines" layoutX="442.0" layoutY="71.0" prefHeight="436.0" prefWidth="358.0" title="Top Airlines" />
+                        <BarChart id="topAirplaneTypes" fx:id="topAirplaneTypes" layoutY="71.0" prefHeight="435.0" prefWidth="449.0" title="Top Airplane Types">
+                          <xAxis>
+                            <CategoryAxis side="BOTTOM" fx:id="xAxis" />
+                          </xAxis>
+                          <yAxis>
+                            <NumberAxis fx:id="yAxis" side="LEFT" />
+                          </yAxis>
+                        </BarChart>
+                        <Label layoutX="258.0" prefHeight="66.0" prefWidth="297.0" styleClass="globalFlightHeader" />
+                        <Label fx:id="dateTime" layoutX="360.0" layoutY="54.0" text="May 22, 2015">
+                           <font>
+                              <Font name="System Bold" size="13.0" />
+                           </font>
+                        </Label>
+                     </children></AnchorPane>
+            </content>
+          </Tab>
+            <Tab closable="false" styleClass="tabBar" text="List of Airports">
+               <content>
+                  <TableView fx:id="listofAirports" prefHeight="200.0" prefWidth="200.0" style="-fx-background-color: darkgrey;" />
+               </content>
+            </Tab>
+        </tabs>
+      </TabPane>
+      <Label id="searchLabel" fx:id="errorMsg" layoutX="526.0" layoutY="14.0" style="-fx-text-fill: red;" text="ERROR: Invalid Airport Code." />
+   </children>
+</AnchorPane>
