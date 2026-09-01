@@ -1,0 +1,60 @@
+{
+  "_readme": [
+    "Airbus autoflight panels are driven by pushing and pulling knobs, not by",
+    "setting a value alone: a value is SELECTED by pulling the knob and MANAGED",
+    "by pushing it. Those pushes and pulls are HTML gauge events (H: events),",
+    "which SimConnect cannot send directly -- they go through the WASM bridge as",
+    "calculator code.",
+    "",
+    "Each entry below is one naming convention. Which aircraft uses which is set",
+    "by 'fcu_convention' in registry.py.",
+    "",
+    "VERIFY BEFORE TRUSTING: 'flybywire' is the documented A32NX convention and",
+    "is used by aircraft built on that codebase. The iniBuilds entries are",
+    "deliberately EMPTY -- their internal event names are not published, and",
+    "guessing them would produce commands that silently do nothing. With no",
+    "convention the adapter falls back to standard SimConnect events, which those",
+    "aircraft do respond to for heading, altitude, speed and approach.",
+    "",
+    "To fill one in for your aircraft: run 'python -m aipilot lvars --scan' with",
+    "the aeroplane loaded, move the FCU knob you care about, and watch which",
+    "variable changes. Add it here and it takes effect on the next run."
+  ],
+
+  "flybywire": {
+    "description": "FlyByWire A32NX and aircraft built on that codebase (Headwind A330neo).",
+    "heading_pull": "A32NX_FCU_HDG_PULL",
+    "heading_push": "A32NX_FCU_HDG_PUSH",
+    "altitude_pull": "A32NX_FCU_ALT_PULL",
+    "altitude_push": "A32NX_FCU_ALT_PUSH",
+    "speed_pull": "A32NX_FCU_SPD_PULL",
+    "speed_push": "A32NX_FCU_SPD_PUSH",
+    "vs_pull": "A32NX_FCU_VS_PULL",
+    "vs_push": "A32NX_FCU_VS_PUSH",
+    "approach_push": "A32NX_FCU_APPR_PUSH",
+    "localizer_push": "A32NX_FCU_LOC_PUSH",
+    "autoland_lvar": "A32NX_AUTOPILOT_ACTIVE"
+  },
+
+  "asobo_a320": {
+    "description": "The stock Asobo A320neo gauge naming, kept for reference.",
+    "heading_pull": "A320_Neo_FCU_HDG_PULL",
+    "heading_push": "A320_Neo_FCU_HDG_PUSH",
+    "altitude_pull": "A320_Neo_FCU_ALT_PULL",
+    "altitude_push": "A320_Neo_FCU_ALT_PUSH",
+    "speed_pull": "A320_Neo_FCU_SPEED_PULL",
+    "speed_push": "A320_Neo_FCU_SPEED_PUSH",
+    "vs_pull": "A320_Neo_FCU_VS_PULL",
+    "vs_push": "A320_Neo_FCU_VS_PUSH",
+    "approach_push": "A320_Neo_FCU_APPR_PUSH",
+    "localizer_push": "A320_Neo_FCU_LOC_PUSH"
+  },
+
+  "inibuilds_a350": {
+    "description": "iniBuilds A350. Empty on purpose -- see the note above. Standard events are used until these are filled in."
+  },
+
+  "inibuilds_a380": {
+    "description": "iniBuilds A380. Empty on purpose -- see the note above."
+  }
+}

@@ -1,0 +1,68 @@
+ident,type,name,latitude_deg,longitude_deg,elevation_ft,iso_country,municipality
+EGLL,large_airport,London Heathrow,51.4706,-0.461941,83,GB,London
+EGKK,large_airport,London Gatwick,51.148056,-0.190278,202,GB,London
+EGCC,large_airport,Manchester,53.353744,-2.274950,257,GB,Manchester
+EIDW,large_airport,Dublin,53.421333,-6.270075,242,IE,Dublin
+LFPG,large_airport,Paris Charles de Gaulle,49.012779,2.550000,392,FR,Paris
+LFPO,large_airport,Paris Orly,48.723333,2.379444,291,FR,Paris
+EHAM,large_airport,Amsterdam Schiphol,52.308613,4.763889,-11,NL,Amsterdam
+EDDF,large_airport,Frankfurt am Main,50.033333,8.570556,364,DE,Frankfurt
+EDDM,large_airport,Munich,48.353783,11.786086,1487,DE,Munich
+EBBR,large_airport,Brussels,50.901389,4.484444,184,BE,Brussels
+LSZH,large_airport,Zurich,47.464722,8.549167,1416,CH,Zurich
+LOWW,large_airport,Vienna,48.110278,16.569722,600,AT,Vienna
+LEMD,large_airport,Madrid Barajas,40.471926,-3.562640,1998,ES,Madrid
+LEBL,large_airport,Barcelona El Prat,41.297078,2.078464,12,ES,Barcelona
+LPPT,large_airport,Lisbon,38.781311,-9.135919,374,PT,Lisbon
+LIRF,large_airport,Rome Fiumicino,41.800278,12.238889,15,IT,Rome
+LIMC,large_airport,Milan Malpensa,45.630606,8.728111,768,IT,Milan
+LGAV,large_airport,Athens,37.936358,23.944467,308,GR,Athens
+EKCH,large_airport,Copenhagen,55.617917,12.655972,17,DK,Copenhagen
+ESSA,large_airport,Stockholm Arlanda,59.651944,17.918611,137,SE,Stockholm
+ENGM,large_airport,Oslo Gardermoen,60.193917,11.100361,681,NO,Oslo
+EFHK,large_airport,Helsinki Vantaa,60.317222,24.963333,179,FI,Helsinki
+LTFM,large_airport,Istanbul,41.275278,28.751944,325,TR,Istanbul
+UUEE,large_airport,Moscow Sheremetyevo,55.972642,37.414589,622,RU,Moscow
+KJFK,large_airport,New York John F Kennedy,40.639751,-73.778925,13,US,New York
+KEWR,large_airport,Newark Liberty,40.692500,-74.168667,18,US,Newark
+KBOS,large_airport,Boston Logan,42.364347,-71.005181,20,US,Boston
+KIAD,large_airport,Washington Dulles,38.944533,-77.455811,313,US,Washington
+KATL,large_airport,Atlanta Hartsfield Jackson,33.636719,-84.428067,1026,US,Atlanta
+KMIA,large_airport,Miami,25.793250,-80.290556,8,US,Miami
+KORD,large_airport,Chicago O Hare,41.978603,-87.904842,672,US,Chicago
+KDFW,large_airport,Dallas Fort Worth,32.896828,-97.037997,607,US,Dallas
+KDEN,large_airport,Denver,39.861656,-104.673178,5431,US,Denver
+KLAX,large_airport,Los Angeles,33.942536,-118.408075,125,US,Los Angeles
+KSFO,large_airport,San Francisco,37.618972,-122.374889,13,US,San Francisco
+KSEA,large_airport,Seattle Tacoma,47.449000,-122.309306,433,US,Seattle
+KLAS,large_airport,Las Vegas Harry Reid,36.080056,-115.152250,2181,US,Las Vegas
+CYYZ,large_airport,Toronto Pearson,43.677223,-79.630556,569,CA,Toronto
+CYVR,large_airport,Vancouver,49.193889,-123.184444,14,CA,Vancouver
+MMMX,large_airport,Mexico City Benito Juarez,19.436303,-99.072097,7316,MX,Mexico City
+SBGR,large_airport,Sao Paulo Guarulhos,-23.435556,-46.473056,2459,BR,Sao Paulo
+SAEZ,large_airport,Buenos Aires Ezeiza,-34.822222,-58.535833,67,AR,Buenos Aires
+OMDB,large_airport,Dubai,25.252778,55.364444,62,AE,Dubai
+OMAA,large_airport,Abu Dhabi,24.433000,54.651100,88,AE,Abu Dhabi
+OTHH,large_airport,Doha Hamad,25.273056,51.608056,13,QA,Doha
+OERK,large_airport,Riyadh King Khalid,24.957628,46.698776,2049,SA,Riyadh
+VIDP,large_airport,Delhi Indira Gandhi,28.566500,77.103088,777,IN,Delhi
+VABB,large_airport,Mumbai Chhatrapati Shivaji,19.088686,72.867919,39,IN,Mumbai
+VTBS,large_airport,Bangkok Suvarnabhumi,13.681108,100.747283,5,TH,Bangkok
+WSSS,large_airport,Singapore Changi,1.350189,103.994433,22,SG,Singapore
+WMKK,large_airport,Kuala Lumpur,2.745578,101.709917,69,MY,Kuala Lumpur
+VHHH,large_airport,Hong Kong,22.308919,113.914603,28,HK,Hong Kong
+RJTT,large_airport,Tokyo Haneda,35.552258,139.779694,21,JP,Tokyo
+RJAA,large_airport,Tokyo Narita,35.764722,140.386389,141,JP,Tokyo
+RKSI,large_airport,Seoul Incheon,37.469075,126.450517,23,KR,Seoul
+ZBAA,large_airport,Beijing Capital,40.080111,116.584556,116,CN,Beijing
+ZSPD,large_airport,Shanghai Pudong,31.143378,121.805214,13,CN,Shanghai
+YSSY,large_airport,Sydney Kingsford Smith,-33.946111,151.177222,21,AU,Sydney
+YMML,large_airport,Melbourne Tullamarine,-37.673333,144.843333,434,AU,Melbourne
+NZAA,large_airport,Auckland,-37.008056,174.791667,23,NZ,Auckland
+FAOR,large_airport,Johannesburg O R Tambo,-26.139166,28.246000,5558,ZA,Johannesburg
+FACT,large_airport,Cape Town,-33.964806,18.601667,151,ZA,Cape Town
+HECA,large_airport,Cairo,30.111972,31.405556,382,EG,Cairo
+GCLP,large_airport,Gran Canaria,27.931886,-15.386586,78,ES,Las Palmas
+BIKF,large_airport,Keflavik,63.985000,-22.605556,171,IS,Reykjavik
+PANC,large_airport,Anchorage,61.174361,-149.996361,152,US,Anchorage
+PHNL,large_airport,Honolulu,21.318681,-157.922428,13,US,Honolulu

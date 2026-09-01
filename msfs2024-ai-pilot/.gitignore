@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Dropped in by the user, not by us: the SimConnect DLL from the MSFS SDK and
+# whatever nav data they downloaded.
+SimConnect.dll
+*.sqlite
+navdata/
+airports.csv
+runways.csv
