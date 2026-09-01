@@ -35,7 +35,7 @@ import ctypes
 import json
 import struct
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from typing import Optional
 
 from .base import SimBackendError

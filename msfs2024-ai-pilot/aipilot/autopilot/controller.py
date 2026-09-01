@@ -24,17 +24,15 @@ and dropping the aeroplane on the runway.
 
 from __future__ import annotations
 
-import math
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from ..aircraft.base import AircraftAdapter
-from ..geo import LatLon, distance_nm, normalize_deg, signed_diff_deg
-from ..navdata.base import Runway
+from ..geo import LatLon, distance_nm
 from ..perf.profiles import AircraftProfile
 from ..route.plan import FlightPlan
-from ..route.profile import VerticalProfile, build_vertical_profile
+from ..route.profile import build_vertical_profile
 from ..sim.base import SimBackend, SimState
 from .lateral import LateralGuidance
 from .phases import EventLog, FlightEvent, Phase, phase_rank
@@ -65,6 +63,12 @@ LANDING_AGL_FT = 900.0
 
 #: Where control is handed back when the AI Pilot is not landing it.
 HANDOVER_AGL_FT = 200.0
+
+#: Where the handover is announced. Two hundred feet is about eight seconds
+#: from the runway, which is not enough notice for someone who has been
+#: watching rather than flying; a thousand gives them time to get their hands
+#: on the controls before they are needed.
+HANDOVER_WARNING_AGL_FT = 1000.0
 
 #: Height above the field to climb to on a missed approach.
 MISSED_APPROACH_HEIGHT_FT = 3000.0
@@ -200,6 +204,7 @@ class AIPilot:
         self._max_agl_seen = 0.0
         self._flaring = False
         self._gate_checked = False
+        self._handover_warned = False
         self._missed_approach_alt: Optional[float] = None
         self._last_airborne_vs = 0.0
         self._commanded_flaps = 0
@@ -664,6 +669,7 @@ class AIPilot:
         self._autoland_active = False
         self._flaring = False
         self._handed_over = False
+        self._handover_warned = False
         self._gate_checked = False
         self._nav_tuned = False
         self.adapter._approach_armed = False
@@ -792,9 +798,18 @@ class AIPilot:
                     self._autoland_active = True
                     self._event("Localizer and glideslope captured -- autoland engaged")
 
-        if not self._will_land_itself() and not self._handed_over and \
-                state.altitude_agl_ft <= HANDOVER_AGL_FT:
-            self._hand_over(state)
+        if not self._will_land_itself():
+            if not self._handover_warned and \
+                    state.altitude_agl_ft <= HANDOVER_WARNING_AGL_FT:
+                self._handover_warned = True
+                self._event(
+                    f"Stand by to take control: the landing is yours at "
+                    f"{HANDOVER_AGL_FT:.0f} ft, about "
+                    f"{HANDOVER_WARNING_AGL_FT / 60:.0f} seconds from now.",
+                    "warning",
+                )
+            if not self._handed_over and state.altitude_agl_ft <= HANDOVER_AGL_FT:
+                self._hand_over(state)
 
     def _hand_over(self, state: SimState) -> None:
         self._handed_over = True

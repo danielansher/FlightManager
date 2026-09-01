@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Pilot</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>AI&nbsp;Pilot <span class="sub">Microsoft Flight Simulator 2024</span></h1>
+  <div id="connection" class="pill idle">not connected</div>
+</header>
+
+<main>
+  <section class="panel setup" id="setup">
+    <h2>Flight</h2>
+    <div class="grid">
+      <label>From <input id="origin" placeholder="EGLL" maxlength="4" autocomplete="off"></label>
+      <label>To <input id="destination" placeholder="KJFK" maxlength="4" autocomplete="off"></label>
+      <label>Aircraft <select id="aircraft"></select></label>
+      <label>Cruise <input id="cruise" placeholder="auto" autocomplete="off"></label>
+      <label>Dep runway <input id="departure_runway" placeholder="auto" autocomplete="off"></label>
+      <label>Arr runway <input id="arrival_runway" placeholder="auto" autocomplete="off"></label>
+      <label>Wind dir <input id="wind_from" placeholder="0" autocomplete="off"></label>
+      <label>Wind kt <input id="wind_kt" placeholder="0" autocomplete="off"></label>
+    </div>
+    <label class="wide">Route <input id="route" placeholder="optional: MID DVR KONAN" autocomplete="off"></label>
+    <div class="grid">
+      <label>Simulator
+        <select id="sim">
+          <option value="msfs">MSFS (live)</option>
+          <option value="mock">Offline rehearsal</option>
+        </select>
+      </label>
+      <label>Landing
+        <select id="autoland">
+          <option value="auto">Land it (ILS or own path)</option>
+          <option value="ils">ILS autoland only</option>
+          <option value="handover">Hand back at 200 ft</option>
+        </select>
+      </label>
+      <label id="speed-field" hidden>Time rate &times; <input id="speed" value="60" autocomplete="off"></label>
+      <label class="check"><input type="checkbox" id="airborne"> Already airborne</label>
+    </div>
+    <div class="actions">
+      <button id="plan-btn" class="secondary">Build plan</button>
+      <button id="engage-btn" class="primary" disabled>Engage AI Pilot</button>
+      <button id="stop-btn" class="danger" hidden>Disengage</button>
+    </div>
+    <div id="warnings"></div>
+  </section>
+
+  <section class="panel readout" id="readout" hidden>
+    <div class="phase-row">
+      <div id="phase" class="phase">PREFLIGHT</div>
+      <div id="message" class="message"></div>
+    </div>
+    <div class="tiles">
+      <div class="tile"><span class="k">Altitude</span><span class="v" id="alt">—</span><span class="u">ft</span></div>
+      <div class="tile"><span class="k">Airspeed</span><span class="v" id="ias">—</span><span class="u">kt</span></div>
+      <div class="tile"><span class="k">Vertical</span><span class="v" id="vs">—</span><span class="u">fpm</span></div>
+      <div class="tile"><span class="k">Heading</span><span class="v" id="hdg">—</span><span class="u">&deg;T</span></div>
+      <div class="tile"><span class="k">Next fix</span><span class="v small" id="wpt">—</span><span class="u" id="wptdist"></span></div>
+      <div class="tile"><span class="k">To run</span><span class="v" id="togo">—</span><span class="u">nm</span></div>
+      <div class="tile"><span class="k">ETA</span><span class="v small" id="eta">—</span><span class="u">remaining</span></div>
+      <div class="tile"><span class="k">Target</span><span class="v small" id="target">—</span><span class="u" id="targetalt"></span></div>
+    </div>
+    <div class="chips">
+      <span class="chip" id="chip-gear">gear up</span>
+      <span class="chip" id="chip-flaps">flaps 0</span>
+      <span class="chip" id="chip-xtk">on track</span>
+      <span class="chip" id="chip-path">on path</span>
+      <span class="chip" id="chip-autoland" hidden>autoland</span>
+    </div>
+  </section>
+
+  <section class="panel map-panel" id="map-panel" hidden>
+    <h2>Route</h2>
+    <canvas id="map" width="900" height="420"></canvas>
+  </section>
+
+  <section class="panel log-panel" id="log-panel" hidden>
+    <h2>Flight log</h2>
+    <div id="log" class="log"></div>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

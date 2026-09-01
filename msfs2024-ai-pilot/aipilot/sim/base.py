@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass
 from typing import Optional
 
-from ..geo import LatLon, normalize_deg
+from ..geo import LatLon
 
 
 @dataclass
@@ -94,10 +94,6 @@ class SimState:
     def flight_level(self) -> int:
         return int(round(self.altitude_ft / 100.0))
 
-    def with_position(self, pos: LatLon) -> "SimState":
-        return replace(self, lat=pos.lat, lon=pos.lon)
-
-
 @dataclass
 class SimCapabilities:
     """What a backend can actually do.
@@ -176,10 +172,6 @@ class SimBackend(ABC):
 
     def __exit__(self, *exc: object) -> None:
         self.close()
-
-
-def normalize_heading(deg: float) -> float:
-    return normalize_deg(deg)
 
 
 def clamp(value: float, low: float, high: float) -> float:

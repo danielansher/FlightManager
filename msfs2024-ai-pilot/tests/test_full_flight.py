@@ -285,3 +285,48 @@ def test_warnings_are_surfaced_to_the_user(bundled_navdata):
     warnings = [e for e in result.pilot.log if e.level == "warning"]
     assert warnings, "synthetic runway data must be reported"
     assert any("no runway data" in e.message.lower() for e in warnings)
+
+
+@pytest.mark.parametrize("dt", [0.25, 0.5, 2.0, 5.0])
+def test_the_result_does_not_depend_on_the_control_rate(navdata, dt):
+    """Guidance must be robust to how often it is called.
+
+    The command line runs at four hertz and the tests at half a hertz, and an
+    accelerated replay is tempting to implement by simply taking larger steps.
+    That is what makes this worth pinning: a controller that only behaves at
+    one particular step size is one that will misbehave on somebody's slower
+    machine.
+    """
+    result = fly_flight(navdata, "EGLL", "EGCC", "b787-10",
+                        wind_from_deg=250, wind_kt=25, dt=dt)
+    assert result.completed, f"ended in {result.phase.value} at dt={dt}"
+    assert result.stop_distance_from_threshold_nm < 3.0
+    assert result.touchdown_fpm is not None and result.touchdown_fpm > -350
+    # Block time should agree closely regardless of step size.
+    assert 25 * 60 < result.elapsed_s < 40 * 60
+
+
+def test_handover_is_announced_with_time_to_react(navdata):
+    """Two hundred feet is eight seconds from the runway. Someone who has been
+    watching rather than flying needs more notice than that."""
+    result = fly_flight(navdata, "EGLL", "EGCC", "b787-10",
+                        options=PilotOptions(autoland="handover"))
+    warning = next((e for e in result.pilot.log
+                    if "stand by to take control" in e.message.lower()), None)
+    handover = next((e for e in result.pilot.log
+                     if "your controls" in e.message.lower()), None)
+    assert warning is not None, "handed over with no warning at all"
+    assert handover is not None
+    assert warning.time_s < handover.time_s
+    assert warning.level == "warning"
+
+
+def test_lights_are_not_re_commanded_every_cycle(navdata):
+    """These run four times a second for hours; each one is a network round
+    trip to the simulator."""
+    result = fly_flight(navdata, "EGLL", "EGCC", "b787-10")
+    events = result.sim.events_sent
+    light_events = [e for e, _ in events
+                    if "LIGHTS" in e or e.startswith("STROBES")]
+    assert light_events, "the lights were never touched at all"
+    assert len(light_events) < 20, f"{len(light_events)} light commands sent"

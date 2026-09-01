@@ -21,7 +21,7 @@ import os
 from typing import Optional
 
 from ..geo import LatLon, destination_point, normalize_deg
-from .base import Airport, NavDataProvider, Runway, Waypoint
+from .base import Airport, NavDataProvider, Runway
 
 AIRPORTS_URL = "https://davidmegginson.github.io/ourairports-data/airports.csv"
 RUNWAYS_URL = "https://davidmegginson.github.io/ourairports-data/runways.csv"

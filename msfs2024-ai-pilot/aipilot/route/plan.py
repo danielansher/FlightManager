@@ -30,15 +30,6 @@ class RouteLeg:
     def position(self) -> LatLon:
         return self.waypoint.position
 
-    def satisfies(self, altitude_ft: float, tolerance_ft: float = 300.0) -> bool:
-        if self.altitude_ft is None:
-            return True
-        if self.altitude_kind == "at_or_above":
-            return altitude_ft >= self.altitude_ft - tolerance_ft
-        if self.altitude_kind == "at_or_below":
-            return altitude_ft <= self.altitude_ft + tolerance_ft
-        return abs(altitude_ft - self.altitude_ft) <= tolerance_ft
-
     def __str__(self) -> str:  # pragma: no cover - display only
         bits = [self.ident]
         if self.altitude_ft is not None:

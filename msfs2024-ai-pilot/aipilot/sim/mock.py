@@ -16,7 +16,7 @@ tested in CI on a machine with no Microsoft Flight Simulator anywhere near it.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 from ..geo import LatLon, destination_point, normalize_deg, signed_diff_deg

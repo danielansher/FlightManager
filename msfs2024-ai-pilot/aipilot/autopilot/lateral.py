@@ -32,7 +32,6 @@ from ..geo import (
     distance_nm,
     initial_bearing_deg,
     normalize_deg,
-    signed_diff_deg,
     turn_anticipation_nm,
     wind_correction_angle_deg,
 )
@@ -112,9 +111,6 @@ class LateralGuidance:
     @property
     def finished(self) -> bool:
         return self.active_index >= len(self.plan) - 1
-
-    def distance_to_active_nm(self, position: LatLon) -> float:
-        return distance_nm(position, self.active_leg.position)
 
     def distance_to_end_nm(self, position: LatLon) -> float:
         return self.plan.distance_to_end_nm(position, self.active_index)

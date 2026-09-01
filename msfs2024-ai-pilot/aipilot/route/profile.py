@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Optional
 
 from ..perf.profiles import AircraftProfile
 from ..units import FT_PER_NM
@@ -113,15 +112,6 @@ class VerticalProfile:
         if minutes <= 0.0:
             return 0.0
         return (target - current_altitude_ft) / minutes
-
-    def is_below_path(self, distance_to_go_nm: float, altitude_ft: float,
-                      tolerance_ft: float = 200.0) -> bool:
-        return altitude_ft < self.target_altitude_at(distance_to_go_nm) - tolerance_ft
-
-    def is_above_path(self, distance_to_go_nm: float, altitude_ft: float,
-                      tolerance_ft: float = 200.0) -> bool:
-        return altitude_ft > self.target_altitude_at(distance_to_go_nm) + tolerance_ft
-
 
 def build_vertical_profile(cruise_altitude_ft: float, field_elevation_ft: float,
                            profile: AircraftProfile,

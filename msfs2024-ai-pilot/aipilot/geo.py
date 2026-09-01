@@ -99,16 +99,6 @@ def along_track_nm(position: LatLon, leg_start: LatLon, leg_end: LatLon) -> floa
     )
 
 
-def course_at_point(position: LatLon, leg_end: LatLon) -> float:
-    """Great-circle course to the leg terminator from where we actually are.
-
-    On a long leg the desired track drifts continuously, so the guidance takes
-    its reference course from the present position rather than from the leg's
-    published start course.
-    """
-    return initial_bearing_deg(position, leg_end)
-
-
 def turn_radius_nm(tas_kt: float, bank_deg: float) -> float:
     """Radius of a level turn at ``tas_kt`` held at ``bank_deg`` of bank."""
     if tas_kt <= 0:

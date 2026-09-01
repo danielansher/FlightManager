@@ -25,8 +25,7 @@ variation the simulator reports for the aeroplane's present position.
 
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 from ..geo import normalize_deg
@@ -85,6 +84,7 @@ class AircraftAdapter:
         self._autothrottle_on = False
         self._toga = False
         self._vs_mode = False
+        self._switches: dict[str, bool] = {}
 
     # -- Introspection -------------------------------------------------------
     def capabilities(self) -> AdapterCapabilities:
@@ -282,17 +282,22 @@ class AircraftAdapter:
         self.sim.send_event("BRAKES")
 
     # -- Lights, for the sake of looking like an aeroplane --------------------
+    # Each is remembered, because these are called every cycle and the events
+    # would otherwise be re-sent several times a second for a whole flight.
+    def _switch(self, key: str, on: bool, on_event: str, off_event: str) -> None:
+        if self._switches.get(key) is on:
+            return
+        self._switches[key] = on
+        self.sim.send_event(on_event if on else off_event)
+
     def set_landing_lights(self, on: bool) -> None:
-        self.sim.send_event("LANDING_LIGHTS_ON" if on else "LANDING_LIGHTS_OFF")
+        self._switch("landing", on, "LANDING_LIGHTS_ON", "LANDING_LIGHTS_OFF")
 
     def set_strobes(self, on: bool) -> None:
-        self.sim.send_event("STROBES_ON" if on else "STROBES_OFF")
+        self._switch("strobe", on, "STROBES_ON", "STROBES_OFF")
 
     def set_taxi_lights(self, on: bool) -> None:
-        self.sim.send_event("TAXI_LIGHTS_ON" if on else "TAXI_LIGHTS_OFF")
-
-    def set_seatbelt_sign(self, on: bool) -> None:
-        self.sim.send_event("CABIN_SEATBELTS_ALERT_SWITCH_TOGGLE")
+        self._switch("taxi", on, "TAXI_LIGHTS_ON", "TAXI_LIGHTS_OFF")
 
 
 def _angle_gap(a: float, b: float) -> float:

@@ -19,7 +19,6 @@ import ctypes
 import os
 import platform
 import struct
-import sys
 from ctypes import (
     POINTER,
     byref,

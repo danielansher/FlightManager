@@ -16,10 +16,10 @@ priority order, through :class:`NavDataProvider`:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from typing import Iterable, Optional, Sequence
+from dataclasses import dataclass
+from typing import Optional, Sequence
 
-from ..geo import LatLon, distance_nm, normalize_deg
+from ..geo import LatLon, normalize_deg
 
 
 @dataclass(frozen=True)
@@ -73,11 +73,6 @@ class Airport:
             if rwy.ident.upper().lstrip("0") == wanted:
                 return rwy
         return None
-
-    @property
-    def longest_runway(self) -> Optional[Runway]:
-        return max(self.runways, key=lambda r: r.length_ft, default=None)
-
 
 @dataclass(frozen=True)
 class Waypoint:
@@ -215,10 +210,3 @@ def select_runway(
     return max(candidates, key=score)
 
 
-def nearest(points: Iterable[Waypoint], origin: LatLon) -> Optional[Waypoint]:
-    best, best_d = None, float("inf")
-    for point in points:
-        d = distance_nm(origin, point.position)
-        if d < best_d:
-            best, best_d = point, d
-    return best

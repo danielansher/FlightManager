@@ -36,50 +36,6 @@ STD_LAPSE_C_PER_FT = 0.0019812  # 1.98 degC per 1000 ft
 SPEED_OF_SOUND_SL_KT = 661.4788
 
 
-def m_to_nm(m: float) -> float:
-    return m / M_PER_NM
-
-
-def nm_to_m(nm: float) -> float:
-    return nm * M_PER_NM
-
-
-def m_to_ft(m: float) -> float:
-    return m * FT_PER_M
-
-
-def ft_to_m(ft: float) -> float:
-    return ft * M_PER_FT
-
-
-def mps_to_kt(mps: float) -> float:
-    return mps * KT_PER_MPS
-
-
-def kt_to_mps(kt: float) -> float:
-    return kt * MPS_PER_KT
-
-
-def mps_to_fpm(mps: float) -> float:
-    return mps * FPM_PER_MPS
-
-
-def rad_to_deg(rad: float) -> float:
-    return math.degrees(rad)
-
-
-def deg_to_rad(deg: float) -> float:
-    return math.radians(deg)
-
-
-def nm_to_ft(nm: float) -> float:
-    return nm * FT_PER_NM
-
-
-def ft_to_nm(ft: float) -> float:
-    return ft / FT_PER_NM
-
-
 # --- Atmosphere -------------------------------------------------------------
 def isa_temp_c(altitude_ft: float) -> float:
     """ISA static air temperature, held constant above the tropopause."""
