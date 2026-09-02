@@ -19,7 +19,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
-from ..geo import LatLon, normalize_deg
+from ..geo import LatLon, distance_nm, normalize_deg
 
 
 @dataclass(frozen=True)
@@ -75,6 +75,52 @@ class Airport:
         return None
 
 @dataclass(frozen=True)
+class TaxiPath:
+    """One segment of taxiway centreline, as the scenery defines it."""
+
+    start: LatLon
+    end: LatLon
+    name: str = ""
+    kind: str = "taxi"          # "taxi", "runway", "parking", "vehicle"
+    width_ft: float = 75.0
+
+    @property
+    def length_nm(self) -> float:
+        return distance_nm(self.start, self.end)
+
+
+@dataclass(frozen=True)
+class Parking:
+    """A stand, gate or ramp position."""
+
+    name: str
+    position: LatLon
+    heading_true_deg: float = 0.0
+    radius_ft: float = 75.0
+    kind: str = "gate"
+
+    def __str__(self) -> str:  # pragma: no cover - display only
+        return self.name
+
+
+@dataclass(frozen=True)
+class GroundLayout:
+    """Everything known about getting around an airport on the ground."""
+
+    icao: str
+    taxi_paths: tuple[TaxiPath, ...] = ()
+    parking: tuple[Parking, ...] = ()
+
+    @property
+    def usable(self) -> bool:
+        return len(self.taxi_paths) >= 2
+
+    def nearest_parking(self, position: LatLon) -> Optional[Parking]:
+        return min(self.parking, key=lambda p: distance_nm(position, p.position),
+                   default=None)
+
+
+@dataclass(frozen=True)
 class Waypoint:
     """A named point: a navaid, an intersection, or something we invented."""
 
@@ -98,6 +144,10 @@ class NavDataProvider(ABC):
     def waypoint(self, ident: str, near: Optional[LatLon] = None) -> Optional[Waypoint]:
         """Resolve a fix name. Identifiers repeat worldwide, so when ``near``
         is given the closest match wins."""
+        return None
+
+    def ground_layout(self, icao: str) -> Optional[GroundLayout]:
+        """Taxiways and stands, for providers that have them."""
         return None
 
     def close(self) -> None:
@@ -144,6 +194,13 @@ class ChainedNavData(NavDataProvider):
             found = provider.waypoint(ident, near)
             if found is not None:
                 return found
+        return None
+
+    def ground_layout(self, icao: str) -> Optional[GroundLayout]:
+        for provider in self.providers:
+            layout = provider.ground_layout(icao)
+            if layout is not None and layout.usable:
+                return layout
         return None
 
     def close(self) -> None:

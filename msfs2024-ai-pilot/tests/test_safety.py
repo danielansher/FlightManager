@@ -173,40 +173,96 @@ def test_it_leaves_a_working_autothrottle_alone():
 
 
 # --- Terrain ----------------------------------------------------------------
-def test_it_refuses_to_descend_into_rising_ground():
-    """The Burbank case: a short sector towards an airport in a valley."""
+def test_the_terrain_floor_relaxes_towards_the_runway():
+    """High enroute, nothing on short final -- the glidepath is the floor there."""
     profile = get_profile("b787-10")
     plan = plan_route(KLAX, KBUR, profile, None)
+    sim = _sim_at(KLAX.position, 0.0)
+    pilot = _pilot(plan, sim)
+    assert pilot._terrain_floor_agl_ft(40.0) == 1500.0
+    assert pilot._terrain_floor_agl_ft(15.0) == 1500.0
+    assert 400 < pilot._terrain_floor_agl_ft(10.0) < 1200
+    assert pilot._terrain_floor_agl_ft(4.0) == 0.0
+    assert pilot._terrain_floor_agl_ft(0.0) == 0.0
 
-    ridge_centre = LatLon(34.13, -118.38)
+
+def test_it_refuses_to_descend_into_rising_ground():
+    """The Burbank case, tested where it happens: a descent commanded while
+    the ground underneath has come up to meet the aeroplane."""
+    from aipilot.autopilot.vertical import VerticalCommand
+
+    profile = get_profile("b787-10")
+    plan = plan_route(KLAX, KBUR, profile, None)
+    sim = _sim_at(KLAX.position, 0.0)
+    pilot = _pilot(plan, sim)
+    pilot.phase = Phase.DESCENT
+
+    state = sim.state
+    state.altitude_ft = 3000.0
+    state.ground_elevation_ft = 2600.0     # a ridge, 400 ft below the aeroplane
+    state.altitude_agl_ft = 400.0
+    state.vertical_speed_fpm = -1200.0
+
+    command = VerticalCommand(altitude_ft=1500.0, vertical_speed_fpm=-1500.0,
+                              speed=250.0, speed_is_mach=False)
+    held = pilot._apply_terrain_floor(command, state, 30.0)
+
+    assert held.vertical_speed_fpm > 0, "kept descending into the ridge"
+    assert held.altitude_ft >= state.ground_elevation_ft + 1000.0
+    assert any("terrain" in e.message.lower() for e in pilot.log)
+
+
+def test_the_terrain_floor_leaves_a_normal_approach_alone():
+    """It must not fire on every approach. A selector set at or below the
+    runway is what landing is, not a warning."""
+    from aipilot.autopilot.vertical import VerticalCommand
+
+    profile = get_profile("b787-10")
+    plan = plan_route(KLAX, KBUR, profile, None)
+    sim = _sim_at(KLAX.position, 0.0)
+    pilot = _pilot(plan, sim)
+    pilot.phase = Phase.APPROACH
+
+    state = sim.state
+    state.altitude_ft = 2500.0
+    state.ground_elevation_ft = 700.0
+    state.altitude_agl_ft = 1800.0
+    state.vertical_speed_fpm = -700.0
+
+    command = VerticalCommand(altitude_ft=828.0, vertical_speed_fpm=-700.0,
+                              speed=160.0, speed_is_mach=False)
+    result = pilot._apply_terrain_floor(command, state, 6.0)
+    assert result.vertical_speed_fpm == command.vertical_speed_fpm
+    assert not any("terrain" in e.message.lower() for e in pilot.log)
+
+
+def test_a_flight_never_gets_near_the_ground_except_to_land():
+    profile = get_profile("b787-10")
+    plan = plan_route(KLAX, KBUR, profile, None)
+    runway = plan.departure_runway
+    lined_up = destination_point(runway.threshold, runway.heading_true_deg, 0.1)
 
     def terrain(position):
-        """Flat at each airport's own elevation, with a ridge between them."""
         to_lax = distance_nm(position, KLAX.position)
         to_bur = distance_nm(position, KBUR.position)
+        if to_bur < 5.0:
+            return KBUR.elevation_ft
+        if to_lax < 5.0:
+            return KLAX.elevation_ft
         total = max(to_lax + to_bur, 1e-6)
-        base = (KLAX.elevation_ft * to_bur + KBUR.elevation_ft * to_lax) / total
-        d = distance_nm(position, ridge_centre)
-        if d > 4.0:
-            return base
-        return base + 3000.0 * (1.0 - d / 4.0)
+        return (KLAX.elevation_ft * to_bur + KBUR.elevation_ft * to_lax) / total
 
-    sim = MockSim(LatLon(34.02, -118.40), 20.0, 200.0,
-                  model=MockAircraftModel(max_climb_fpm=profile.max_climb_rate_fpm),
-                  terrain=terrain, start_airborne_at_ft=5000.0)
-    pilot = _pilot(plan, sim, PilotOptions(start_airborne=True))
+    sim = _sim_at(lined_up, runway.heading_true_deg, terrain=terrain)
+    pilot = _pilot(plan, sim)
     pilot.engage()
-
-    lowest_agl = 1e9
-    for _ in range(900):
+    lowest = 1e9
+    for _ in range(int(2 * 3600)):
         pilot.update(1.0)
         if pilot.phase in (Phase.LANDING, Phase.ROLLOUT, Phase.COMPLETE):
             break
         if pilot.phase.airborne:
-            lowest_agl = min(lowest_agl, sim.state.altitude_agl_ft)
-
-    assert lowest_agl > 200.0, f"got within {lowest_agl:.0f} ft of the ground"
-    assert any("terrain" in e.message.lower() for e in pilot.log)
+            lowest = min(lowest, sim.state.altitude_agl_ft)
+    assert lowest > 400.0, f"got within {lowest:.0f} ft of the ground"
 
 
 def test_terrain_protection_never_limits_a_climb():

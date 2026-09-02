@@ -43,6 +43,15 @@ from ..route.planner import rebuild_departure
 from ..route.profile import build_vertical_profile
 from ..sim.base import SimBackend, SimState
 from ..units import mach_to_tas, tas_to_cas
+from ..geo import initial_bearing_deg, normalize_deg
+from ..route.taxi import runway_entry_point, simplify
+from .ground import (
+    PUSHBACK_MAX_NM,
+    PUSHBACK_MIN_NM,
+    PushbackGuidance,
+    TaxiGuidance,
+    pushback_needed,
+)
 from .lateral import LateralGuidance
 from .phases import EventLog, FlightEvent, Phase, phase_rank
 from .vertical import VerticalGuidance, should_start_descent
@@ -114,6 +123,18 @@ PULL_UP_VS_FPM = -1000.0
 #: How far above the commanded speed counts as an overspeed worth acting on.
 OVERSPEED_MARGIN_KT = 15.0
 
+#: Walking pace, for straightening out on the runway.
+LINEUP_SPEED_KT = 5.0
+
+#: How closely lined up the aeroplane must be before the takeoff roll starts:
+#: about sixty feet off the centreline and six degrees of heading.
+LINEUP_TOLERANCE_NM = 0.010
+LINEUP_HEADING_DEG = 6.0
+
+#: How long the autothrottle may be off the commanded speed before the AI
+#: Pilot concludes it is not actually flying it and takes the levers.
+AUTOTHROTTLE_DOUBT_S = 45.0
+
 #: How fast the thrust levers may move, as a percentage of travel per second.
 LEVER_RATE_PERCENT_PER_S = 12.0
 
@@ -165,6 +186,10 @@ class PilotOptions:
     manage_thrust: bool = True
     #: Refuse to descend below a minimum height above the terrain underneath.
     terrain_protection: bool = True
+    #: Push back and taxi to the runway, where taxiway data is available.
+    #: Without that data nothing moves on the ground, by design: guessing a
+    #: path across an apron is how an aeroplane ends up in a building.
+    taxi: bool = True
 
 
 @dataclass
@@ -223,6 +248,7 @@ class AIPilot:
         plan: FlightPlan,
         options: Optional[PilotOptions] = None,
         listener: Optional[Callable[[FlightEvent], None]] = None,
+        ground: Optional[object] = None,
     ) -> None:
         self.sim = sim
         self.adapter = adapter
@@ -240,6 +266,9 @@ class AIPilot:
             else plan.destination.elevation_ft,
             profile,
         )
+        self.ground_network = ground
+        self.taxi: Optional[TaxiGuidance] = None
+        self.pushback: Optional[PushbackGuidance] = None
         self.lateral = LateralGuidance(plan, profile.max_bank_deg)
         self.vertical = VerticalGuidance(plan, profile, self.vertical_profile)
 
@@ -251,10 +280,12 @@ class AIPilot:
         self._ap_disconnects = 0
         self._runway_wait_reported: Optional[float] = None
         self._runway_check_warned = False
+        self._ground_started = False
         self._overspeed = False
         self._speedbrake_out = False
         self._lever_percent = 60.0
         self._autothrottle_working: Optional[bool] = None
+        self._autothrottle_doubt_s = 0.0
         self._terrain_limited = False
         self._last_dt = 1.0
         self._ap_ever_engaged = False
@@ -328,6 +359,10 @@ class AIPilot:
                 self._fly_flare(state, distance_to_go)
         elif self.phase is Phase.TAKEOFF:
             self._fly_takeoff(state)
+        elif self.phase is Phase.PUSHBACK:
+            self._fly_pushback(state)
+        elif self.phase is Phase.TAXI:
+            self._fly_taxi(state)
         elif self.phase is Phase.ROLLOUT:
             self._fly_rollout(state)
 
@@ -361,9 +396,30 @@ class AIPilot:
                 self._enter_phase(Phase.CLIMB, "already airborne")
                 self._establish_airborne(state)
                 return
-            if not self._ready_for_takeoff(state):
-                return
-            self._enter_phase(Phase.TAKEOFF, "lined up, cleared for takeoff")
+            if self._ready_for_takeoff(state):
+                self._enter_phase(Phase.TAKEOFF, "lined up, cleared for takeoff")
+            return
+
+        if phase is Phase.PUSHBACK:
+            if self.pushback is not None and self.pushback.finished(state.position):
+                self.adapter.set_pushback(False, state)
+                self.adapter.set_wheel_brakes(1.0)
+                if state.ground_speed_kt < 1.0 and not state.pushback_attached:
+                    self.pushback = None
+                    if self._start_taxi(state):
+                        self._enter_phase(Phase.TAXI, "taxiing to the runway")
+                    else:
+                        self._enter_phase(Phase.TAXI, "pushback complete")
+            return
+
+        if phase is Phase.TAXI:
+            # Properly lined up, not merely somewhere on the runway. The looser
+            # "which runway is this" test tolerates being most of a runway
+            # width off centre, which is fine for identifying a runway and no
+            # good at all for starting a takeoff roll down one.
+            if self._lined_up_on_departure_runway(state):
+                self._ready_for_takeoff(state)
+                self._enter_phase(Phase.TAKEOFF, "lined up, cleared for takeoff")
             return
 
         if phase is Phase.TAKEOFF:
@@ -435,10 +491,6 @@ class AIPilot:
         if runway is not None:
             self.adapter.set_heading_true(runway.heading_true_deg, state)
         self.adapter.set_autobrake(2)
-        if self.options.manage_lights:
-            self.adapter.set_strobes(True)
-            self.adapter.set_landing_lights(True)
-            self.adapter.set_taxi_lights(True)
         self._tune_arrival_ils(state)
         self._event(
             f"Set up for departure: flaps {self.profile.takeoff_flaps_index}, "
@@ -530,8 +582,22 @@ class AIPilot:
     def _fly_takeoff(self, state: SimState) -> None:
         runway = self.plan.departure_runway
         self.adapter.set_parking_brake(False, state)
+        self.adapter.set_wheel_brakes(0.0)
         self.adapter.set_autothrottle(True)
         self.adapter.takeoff_thrust()
+        if runway is not None and state.on_ground:
+            # Keep straight on the runway with the nosewheel until flying.
+            # Cross-track as well as heading: holding the runway heading while
+            # displaced simply runs parallel to the centreline off the edge.
+            length_nm = runway.length_ft / 6076.11548556
+            far_end = destination_point(runway.threshold,
+                                        runway.heading_true_deg, length_nm)
+            offset = cross_track_nm(state.position, runway.threshold, far_end)
+            error = signed_diff_deg(runway.heading_true_deg, state.heading_true_deg)
+            command = error * 0.08 - offset * 25.0
+            self.adapter.set_steering(max(-0.6, min(0.6, command)))
+        elif not state.on_ground:
+            self.adapter.set_steering(0.0)
         self.adapter.set_flaps(self._commanded_flaps, state)
         if runway is not None:
             self.adapter.set_heading_true(runway.heading_true_deg, state)
@@ -686,6 +752,155 @@ class AIPilot:
         if state.ground_speed_kt > 30.0:
             self.adapter.apply_brakes()
 
+    # -- Pushback and taxi ---------------------------------------------------
+    def _begin_ground_movement(self, state: SimState) -> bool:
+        """Start a pushback or a taxi, if there is anything to work with."""
+        if not self.options.taxi or self.ground_network is None:
+            return False
+        if self._ground_started:
+            return False
+        self._ground_started = True
+
+        runway = self.plan.departure_runway
+        first_leg = None
+        if runway is not None and self.ground_network is not None:
+            route = self.ground_network.route(
+                state.position, runway_entry_point(runway, self.ground_network))
+            if len(route) > 1:
+                first_leg = route[1]
+        needed, distance = pushback_needed(state.position, self.ground_network,
+                                           state.heading_true_deg, first_leg)
+        if needed:
+            # Leave the aeroplane facing the first leg it actually has to
+            # drive, judged from where the pushback will have put it -- not the
+            # direction of the taxiway it eventually joins. Facing the eventual
+            # taxiway means coming off the stand pointing along a taxiway it
+            # has not reached yet, and then swinging ninety degrees the wrong
+            # way to get to it.
+            facing = None
+            if runway is not None:
+                push = max(PUSHBACK_MIN_NM, min(PUSHBACK_MAX_NM, distance))
+                end = destination_point(state.position,
+                                        normalize_deg(state.heading_true_deg + 180.0),
+                                        push)
+                onward = self.ground_network.route(
+                    end, runway_entry_point(runway, self.ground_network))
+                if onward:
+                    facing = initial_bearing_deg(end, onward[0])
+                    if len(onward) > 1 and \
+                            distance_nm(end, onward[0]) < PUSHBACK_MIN_NM:
+                        facing = initial_bearing_deg(onward[0], onward[1])
+            self.pushback = PushbackGuidance(state.position,
+                                             state.heading_true_deg, distance,
+                                             facing)
+            self.adapter.set_wheel_brakes(0.0)
+            self.adapter.set_parking_brake(False, state)
+            self.adapter.set_pushback(True, state)
+            self.adapter.set_tug_heading(self.pushback.final_heading)
+            self._event(
+                f"Pushing back {self.pushback.target_distance_nm * 6076:.0f} ft, "
+                f"turning onto {self.pushback.final_heading:.0f} degrees.")
+            self._enter_phase(Phase.PUSHBACK, "pushback")
+            return True
+
+        if self._start_taxi(state):
+            self._enter_phase(Phase.TAXI, "taxiing to the runway")
+            return True
+        return False
+
+    def _start_taxi(self, state: SimState) -> bool:
+        """Work out a route across the taxiways to the departure runway."""
+        runway = self.plan.departure_runway
+        if self.ground_network is None or runway is None:
+            return False
+        entry = runway_entry_point(runway, self.ground_network)
+        route = self.ground_network.route(state.position, entry)
+        if not route:
+            self._event(
+                "Could not find a way across the taxiways to "
+                f"{runway.ident}. Taxi out by hand and this will take over once "
+                "you are lined up.", "warning")
+            return False
+        route = simplify(route)
+        # Drop any leading points that are behind the aeroplane. The route
+        # starts at the nearest point of the network, which after a pushback
+        # can easily be a few yards *behind* -- and an aeroplane sent to a
+        # point behind it turns right round on the spot to get there, which on
+        # an apron is both wrong and slow.
+        while len(route) > 1:
+            bearing = initial_bearing_deg(state.position, route[0])
+            if abs(signed_diff_deg(bearing, state.heading_true_deg)) < 100.0:
+                break
+            route.pop(0)
+        # Then onto the runway itself and line up, so the takeoff check passes.
+        route.append(runway.threshold)
+        # Well down the runway, so the final turn has room to straighten.
+        route.append(destination_point(runway.threshold,
+                                       runway.heading_true_deg, 0.30))
+        self.taxi = TaxiGuidance(route)
+        distance = self.taxi.distance_remaining_nm(state.position)
+        self._event(f"Taxiing to {runway.ident}: {distance:.2f} nm, "
+                    f"{len(route)} turns.")
+        self.adapter.set_parking_brake(False, state)
+        return True
+
+    def _fly_pushback(self, state: SimState) -> None:
+        if self.pushback is None:
+            return
+        # The tug event takes the heading the aeroplane should end up on.
+        self.adapter.set_tug_heading(self.pushback.final_heading)
+        self.adapter.set_wheel_brakes(0.0)
+
+    def _fly_taxi(self, state: SimState) -> None:
+        """Steer and control speed along the taxi route."""
+        if self.taxi is None:
+            return
+        command = self.taxi.update(state)
+        if command.finished:
+            self._line_up(state)
+            return
+        self.status.message = command.reason
+        self.adapter.set_steering(command.steering)
+        excess = state.ground_speed_kt - command.target_speed_kt
+        if excess > 1.5:
+            self.adapter.set_throttle_percent(0.0)
+            self.adapter.set_wheel_brakes(min(1.0, excess / 6.0))
+        else:
+            self.adapter.set_wheel_brakes(0.0)
+            self.adapter.set_throttle_percent(max(6.0, 22.0 - excess * 6.0))
+
+    def _line_up(self, state: SimState) -> None:
+        """Creep forward on the centreline until properly aligned.
+
+        The taxi route ends on the runway, but arriving on a runway and being
+        lined up along it are different things: the last turn is a ninety
+        degree one taken at walking pace, and an aeroplane comes out of it
+        pointing some way off. Rather than stopping there and calling it lined
+        up, it straightens out first -- which is what a crew does, and what the
+        takeoff roll needs, since a roll that starts fifteen degrees off runs
+        out of runway sideways.
+        """
+        runway = self.plan.departure_runway
+        if runway is None:
+            self.adapter.set_throttle_percent(0.0)
+            self.adapter.set_wheel_brakes(1.0)
+            return
+        length_nm = runway.length_ft / 6076.11548556
+        far_end = destination_point(runway.threshold, runway.heading_true_deg,
+                                    length_nm)
+        offset = cross_track_nm(state.position, runway.threshold, far_end)
+        error = signed_diff_deg(runway.heading_true_deg, state.heading_true_deg)
+        self.adapter.set_steering(max(-0.8, min(0.8, error * 0.06 - offset * 30.0)))
+        self.status.message = (f"lining up on {runway.ident}: "
+                               f"{abs(error):.0f} degrees, "
+                               f"{abs(offset) * 6076:.0f} ft off the centreline")
+        if state.ground_speed_kt > LINEUP_SPEED_KT + 1.5:
+            self.adapter.set_throttle_percent(0.0)
+            self.adapter.set_wheel_brakes(0.4)
+        else:
+            self.adapter.set_wheel_brakes(0.0)
+            self.adapter.set_throttle_percent(16.0)
+
     # -- Thrust, and not letting the speed run away --------------------------
     def _target_speed_kt(self, command, altitude_ft: float) -> float:
         """The commanded speed as an indicated airspeed, whatever it was set in.
@@ -740,16 +955,27 @@ class AIPilot:
             self._event("Back within limits.")
 
         if state.ap_autothrottle and abs(excess) < OVERSPEED_MARGIN_KT:
+            self._autothrottle_doubt_s = 0.0
             self._autothrottle_working = True
             return                     # the aeroplane is flying it; leave it be
 
-        if abs(excess) < 6.0:
-            return
-        if self._autothrottle_working is None and state.ap_autothrottle:
+        if state.ap_autothrottle and self._autothrottle_working is not False:
+            # Give it time before concluding anything. Speed lags the target
+            # for a while after every thrust change -- accelerating through
+            # the climb, decelerating on the approach -- and judging on a
+            # single cycle declares a perfectly good autothrottle broken about
+            # a minute into every flight.
+            self._autothrottle_doubt_s += self._last_dt
+            if self._autothrottle_doubt_s < AUTOTHROTTLE_DOUBT_S:
+                return
             self._autothrottle_working = False
             self._event(
-                "The autothrottle is armed but not holding the speed, so the "
-                "thrust levers are being flown directly instead.", "warning")
+                "The autothrottle is armed but has not held the speed for "
+                f"{AUTOTHROTTLE_DOUBT_S:.0f} seconds, so the thrust levers are "
+                "being flown directly instead.", "warning")
+
+        if abs(excess) < 6.0:
+            return
 
         # A proportional lever position around a per-phase trim setting.
         base = {Phase.CLIMB: 88.0, Phase.CRUISE: 68.0, Phase.DESCENT: 22.0,
@@ -802,7 +1028,8 @@ class AIPilot:
         """
         if not self.options.terrain_protection:
             return command
-        if self.phase in (Phase.PREFLIGHT, Phase.TAKEOFF, Phase.ROLLOUT,
+        if self.phase in (Phase.PREFLIGHT, Phase.PUSHBACK, Phase.TAXI,
+                          Phase.TAKEOFF, Phase.CLIMB, Phase.ROLLOUT,
                           Phase.COMPLETE):
             return command
         if self._autoland_active or self._handed_over:
@@ -822,11 +1049,17 @@ class AIPilot:
         emergency = (state.altitude_agl_ft < PULL_UP_AGL_FT
                      and state.vertical_speed_fpm < PULL_UP_VS_FPM
                      and self.phase is not Phase.LANDING)
-        descending = (command.vertical_speed_fpm is not None
-                      and command.vertical_speed_fpm < 0.0)
-        aiming_below = command.altitude_ft < floor_alt
-        already_low = state.altitude_ft <= floor_alt
-        if not emergency and not aiming_below and not (descending and already_low):
+        # Keyed on where the aeroplane *is*, not on what is in the altitude
+        # selector. On final the selector is deliberately at or below the
+        # runway -- that is what landing is -- and treating that as flying into
+        # the ground produces a terrain warning on every approach, which is the
+        # fastest way to teach someone to ignore terrain warnings.
+        commanded_down = (command.vertical_speed_fpm is not None
+                          and command.vertical_speed_fpm < 0.0)
+        going_down = state.vertical_speed_fpm < -100.0
+        losing_ground = (commanded_down or going_down) and \
+            state.altitude_ft <= floor_alt
+        if not emergency and not losing_ground:
             self._terrain_limited = False
             return command
 
@@ -866,6 +1099,23 @@ class AIPilot:
             return runway
         return None
 
+    def _lined_up_on_departure_runway(self, state: SimState) -> bool:
+        """Tight alignment test, for handing over from taxi to takeoff."""
+        runway = self.plan.departure_runway
+        if runway is None or not state.on_ground:
+            return False
+        length_nm = runway.length_ft / 6076.11548556
+        far_end = destination_point(runway.threshold, runway.heading_true_deg,
+                                    length_nm)
+        along = along_track_nm(state.position, runway.threshold, far_end)
+        if not -0.05 <= along <= length_nm * 0.6:
+            return False
+        if abs(cross_track_nm(state.position, runway.threshold, far_end)) > \
+                LINEUP_TOLERANCE_NM:
+            return False
+        return abs(signed_diff_deg(state.heading_true_deg,
+                                   runway.heading_true_deg)) <= LINEUP_HEADING_DEG
+
     def _ready_for_takeoff(self, state: SimState) -> bool:
         """Whether it is safe to open the thrust levers.
 
@@ -894,6 +1144,8 @@ class AIPilot:
                             f"runway -- using {runway.ident}.")
             return True
 
+        if self._begin_ground_movement(state):
+            return False
         self._report_waiting_for_runway(state)
         return False
 
@@ -1215,11 +1467,48 @@ class AIPilot:
         self.adapter.disengage_autopilot(state)
 
     def _manage_lights(self, state: SimState) -> None:
-        if self.phase is Phase.CLIMB and state.altitude_ft > 10000.0:
-            self.adapter.set_landing_lights(False)
-            self.adapter.set_taxi_lights(False)
-        elif self.phase in (Phase.DESCENT, Phase.APPROACH) and state.altitude_ft < 10000.0:
-            self.adapter.set_landing_lights(True)
+        """Lights and cabin signs, to the schedule an airline crew works to.
+
+        Nav lights and the beacon stay on whenever the engines are turning. The
+        strobes and landing lights belong to the runway: on when lining up, off
+        once clear of it the other end. The taxi light is for taxiing and comes
+        off entering the runway. Ten thousand feet is the dividing line for the
+        landing lights and the seatbelt sign on the way up, and the start of
+        the descent brings both back.
+        """
+        self.adapter.tick_switches()
+        phase = self.phase
+        on_runway = phase in (Phase.TAKEOFF, Phase.LANDING, Phase.ROLLOUT)
+        airborne = phase.airborne
+        below_ten = state.altitude_ft < 10000.0
+
+        self.adapter.set_nav_lights(True, state)
+        self.adapter.set_beacon(state.engines_running or phase is not Phase.COMPLETE,
+                                state)
+        self.adapter.set_no_smoking_sign(True, state)
+
+        # The strobes mark occupying a runway.
+        self.adapter.set_strobes(on_runway or airborne, state)
+
+        # Taxi light for taxiing and pushback; off once lined up.
+        self.adapter.set_taxi_lights(
+            phase in (Phase.PREFLIGHT, Phase.PUSHBACK, Phase.TAXI)
+            or (phase is Phase.ROLLOUT and state.ground_speed_kt < 40.0), state)
+
+        # Landing lights from lining up until ten thousand feet, and again from
+        # ten thousand on the way down until clear of the runway.
+        self.adapter.set_landing_lights(
+            on_runway or (airborne and below_ten), state)
+
+        # Wing and logo lights are ground and low-level items.
+        self.adapter.set_wing_lights(not airborne or below_ten, state)
+        self.adapter.set_logo_lights(not airborne or below_ten, state)
+
+        # Seatbelts on from pushback to ten thousand feet, and from top of
+        # descent to the gate.
+        self.adapter.set_seatbelt_sign(
+            not airborne or below_ten or phase in (Phase.DESCENT, Phase.APPROACH,
+                                                   Phase.LANDING), state)
 
     # -- Reporting -----------------------------------------------------------
     def _finish(self) -> None:

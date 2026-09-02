@@ -89,6 +89,10 @@ class AircraftAdapter:
         self._level_change_pending = False
         self._announced_engage = False
         self._switches: dict[str, bool] = {}
+        self._switch_sent: dict[str, int] = {}
+        self._switch_clock = 0
+        self._steering: Optional[float] = None
+        self._brakes: Optional[float] = None
 
     # -- Introspection -------------------------------------------------------
     def capabilities(self) -> AdapterCapabilities:
@@ -319,23 +323,114 @@ class AircraftAdapter:
     def apply_brakes(self) -> None:
         self.sim.send_event("BRAKES")
 
-    # -- Lights, for the sake of looking like an aeroplane --------------------
-    # Each is remembered, because these are called every cycle and the events
-    # would otherwise be re-sent several times a second for a whole flight.
-    def _switch(self, key: str, on: bool, on_event: str, off_event: str) -> None:
-        if self._switches.get(key) is on:
+    # -- Ground handling -----------------------------------------------------
+    def set_steering(self, value: float) -> None:
+        """Nosewheel steering, -1 full left to +1 full right.
+
+        Sent as rudder, which is what steers an airliner's nosewheel below
+        taxi speed in the simulator.
+        """
+        target = max(-1.0, min(1.0, value))
+        if self._steering is not None and abs(target - self._steering) < 0.02:
             return
-        self._switches[key] = on
-        self.sim.send_event(on_event if on else off_event)
+        self._steering = target
+        self.sim.send_event("RUDDER_SET", int(round(target * 16383)))
 
-    def set_landing_lights(self, on: bool) -> None:
-        self._switch("landing", on, "LANDING_LIGHTS_ON", "LANDING_LIGHTS_OFF")
+    def set_wheel_brakes(self, amount: float) -> None:
+        """Proportional wheel braking, 0 to 1, applied evenly."""
+        target = max(0.0, min(1.0, amount))
+        if self._brakes is not None and abs(target - self._brakes) < 0.05:
+            return
+        self._brakes = target
+        raw = int(round(target * 16383))
+        self.sim.send_event("AXIS_LEFT_BRAKE_SET", raw)
+        self.sim.send_event("AXIS_RIGHT_BRAKE_SET", raw)
 
-    def set_strobes(self, on: bool) -> None:
-        self._switch("strobe", on, "STROBES_ON", "STROBES_OFF")
+    def set_pushback(self, on: bool, state: SimState) -> None:
+        """Attach or release the tug. The event is a toggle, so check first."""
+        if bool(state.pushback_attached) is on:
+            return
+        self.sim.send_event("TOGGLE_PUSHBACK")
+        self.log("Pushback started" if on else "Pushback complete")
 
-    def set_taxi_lights(self, on: bool) -> None:
-        self._switch("taxi", on, "TAXI_LIGHTS_ON", "TAXI_LIGHTS_OFF")
+    def set_tug_heading(self, true_deg: float) -> None:
+        """Which way the tug should push, as a true heading.
+
+        The event takes an angle scaled across the full range of a 32-bit
+        unsigned integer rather than in degrees.
+        """
+        raw = int(normalize_deg(true_deg) / 360.0 * 4294967296.0) & 0xFFFFFFFF
+        self.sim.send_event("KEY_TUG_HEADING", raw)
+
+    # -- Lights and cabin signs ----------------------------------------------
+    # Only some of these have explicit on and off events; the rest are toggles.
+    # A toggle sent without knowing the current state does the right thing half
+    # the time, which for a landing light means arriving at night with it off.
+    # So each one reads the state the simulator reports and acts only when the
+    # switch is actually in the wrong position -- which also means the AI Pilot
+    # never fights a setting the pilot changed by hand.
+    def _set_switch(self, name: str, on: bool, state: SimState,
+                    on_event: Optional[str] = None,
+                    off_event: Optional[str] = None,
+                    toggle_event: Optional[str] = None) -> None:
+        current = bool(getattr(state, name, False))
+        if current is on:
+            self._switches[name] = on
+            return
+        # Do not re-send while the simulator has yet to report the change; a
+        # toggle repeated every cycle simply flickers the switch.
+        if self._switches.get(name) is on and \
+                self._switch_sent.get(name, 0) > self._switch_clock - 8:
+            return
+        self._switches[name] = on
+        self._switch_sent[name] = self._switch_clock
+        if on and on_event:
+            self.sim.send_event(on_event)
+        elif not on and off_event:
+            self.sim.send_event(off_event)
+        elif toggle_event:
+            self.sim.send_event(toggle_event)
+
+    def tick_switches(self) -> None:
+        """Advance the switch clock. Called once per control cycle."""
+        self._switch_clock += 1
+
+    def set_landing_lights(self, on: bool, state: SimState) -> None:
+        self._set_switch("light_landing", on, state,
+                         "LANDING_LIGHTS_ON", "LANDING_LIGHTS_OFF",
+                         "LANDING_LIGHTS_TOGGLE")
+
+    def set_strobes(self, on: bool, state: SimState) -> None:
+        self._set_switch("light_strobe", on, state,
+                         "STROBES_ON", "STROBES_OFF", "STROBES_TOGGLE")
+
+    def set_taxi_lights(self, on: bool, state: SimState) -> None:
+        self._set_switch("light_taxi", on, state,
+                         toggle_event="TOGGLE_TAXI_LIGHTS")
+
+    def set_beacon(self, on: bool, state: SimState) -> None:
+        self._set_switch("light_beacon", on, state,
+                         toggle_event="TOGGLE_BEACON_LIGHTS")
+
+    def set_nav_lights(self, on: bool, state: SimState) -> None:
+        self._set_switch("light_nav", on, state,
+                         toggle_event="TOGGLE_NAV_LIGHTS")
+
+    def set_wing_lights(self, on: bool, state: SimState) -> None:
+        self._set_switch("light_wing", on, state,
+                         toggle_event="TOGGLE_WING_LIGHTS")
+
+    def set_logo_lights(self, on: bool, state: SimState) -> None:
+        self._set_switch("light_logo", on, state,
+                         toggle_event="TOGGLE_LOGO_LIGHTS")
+
+    def set_seatbelt_sign(self, on: bool, state: SimState) -> None:
+        self._set_switch("seatbelt_sign", on, state,
+                         toggle_event="CABIN_SEATBELTS_ALERT_SWITCH_TOGGLE")
+
+    def set_no_smoking_sign(self, on: bool, state: SimState) -> None:
+        self._set_switch("no_smoking_sign", on, state,
+                         toggle_event="CABIN_NO_SMOKING_ALERT_SWITCH_TOGGLE")
 
 
 def _angle_gap(a: float, b: float) -> float:

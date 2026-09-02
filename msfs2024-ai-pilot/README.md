@@ -92,6 +92,19 @@ python -m aipilot ui --open
 Full setup, including where to get proper runway and ILS data, is in
 [docs/INSTALL.md](docs/INSTALL.md).
 
+## On the ground
+
+With taxiway data available it pushes back, taxis to the runway on the real
+taxiways, lines up and goes — lights and cabin signs set correctly throughout.
+Without that data it does not move, says so, and takes over once you have
+taxied out and lined up yourself.
+
+It reads **your installed scenery**, via Little Navmap, so custom airports are
+your custom airports. It cannot see obstacles — nothing in SimConnect exposes
+scenery — so "avoiding things" means staying on the centrelines.
+[docs/GROUND.md](docs/GROUND.md) sets out exactly what that does and does not
+cover.
+
 ## What it does, in order
 
 **Preflight** — picks runways from the wind, works out a cruise level from the
@@ -134,6 +147,8 @@ two hundred feet, stable and configured, and tells you so.
 --wind 250/45                 # plan against a wind
 --airborne                    # engage with the aeroplane already flying
 --msfs 2020                   # which sim, when you have both installed
+--no-taxi                     # you taxi to the runway, it flies from there
+--no-lights                   # do not touch any switches
 ```
 
 ## If the autopilot keeps dropping out

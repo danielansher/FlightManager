@@ -66,7 +66,10 @@ def build_parser() -> argparse.ArgumentParser:
                           "handover always gives the landing back to you")
     fly.add_argument("--airborne", action="store_true",
                      help="the aeroplane is already flying when you engage")
-    fly.add_argument("--no-lights", action="store_true", help="do not touch the lights")
+    fly.add_argument("--no-lights", action="store_true",
+                     help="do not touch the lights or cabin signs")
+    fly.add_argument("--no-taxi", action="store_true",
+                     help="do not push back or taxi; wait to be lined up")
     fly.add_argument("--no-config", action="store_true",
                      help="do not move the gear or flaps")
     fly.add_argument("--no-go-around", action="store_true",
@@ -267,15 +270,28 @@ def command_fly(args) -> int:
         return 1
 
     adapter, _ = build_adapter(key, sim)
+    ground = None
+    if not args.no_taxi:
+        from .route.taxi import build_network
+
+        ground = build_network(navdata.ground_layout(plan.origin.icao))
+        if ground is None:
+            print("No taxiway data for " + plan.origin.icao
+                  + "; taxi out and line up yourself and it will take over.")
+        else:
+            print(f"Taxiway network for {plan.origin.icao}: "
+                  f"{len(ground.nodes)} junctions.")
     options = PilotOptions(
         autoland=args.autoland,
         manage_configuration=not args.no_config,
         manage_lights=not args.no_lights,
         go_around_if_unstable=not args.no_go_around,
         start_airborne=args.airborne,
+        taxi=not args.no_taxi,
     )
     printer = _Printer(quiet=args.quiet)
-    pilot = AIPilot(sim, adapter, profile, plan, options, listener=printer.on_event)
+    pilot = AIPilot(sim, adapter, profile, plan, options,
+                    listener=printer.on_event, ground=ground)
 
     if args.sim == "msfs":
         if not _wait_for_data(sim):

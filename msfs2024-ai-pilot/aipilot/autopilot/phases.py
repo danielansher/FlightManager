@@ -9,6 +9,8 @@ from typing import Callable, Optional
 
 class Phase(str, Enum):
     PREFLIGHT = "preflight"
+    PUSHBACK = "pushback"
+    TAXI = "taxi"
     TAKEOFF = "takeoff"
     CLIMB = "climb"
     CRUISE = "cruise"
@@ -18,6 +20,11 @@ class Phase(str, Enum):
     ROLLOUT = "rollout"
     COMPLETE = "complete"
     ABORTED = "aborted"
+
+    @property
+    def on_ground(self) -> bool:
+        return self in (Phase.PREFLIGHT, Phase.PUSHBACK, Phase.TAXI,
+                        Phase.TAKEOFF, Phase.ROLLOUT, Phase.COMPLETE)
 
     @property
     def airborne(self) -> bool:
@@ -34,8 +41,9 @@ class Phase(str, Enum):
 #: aeroplane that has started its descent should not decide it is climbing
 #: again because it levelled off for traffic.
 PHASE_ORDER = [
-    Phase.PREFLIGHT, Phase.TAKEOFF, Phase.CLIMB, Phase.CRUISE,
-    Phase.DESCENT, Phase.APPROACH, Phase.LANDING, Phase.ROLLOUT, Phase.COMPLETE,
+    Phase.PREFLIGHT, Phase.PUSHBACK, Phase.TAXI, Phase.TAKEOFF, Phase.CLIMB,
+    Phase.CRUISE, Phase.DESCENT, Phase.APPROACH, Phase.LANDING, Phase.ROLLOUT,
+    Phase.COMPLETE,
 ]
 
 

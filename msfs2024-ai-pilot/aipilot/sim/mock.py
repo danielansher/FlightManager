@@ -30,6 +30,23 @@ BOUNDARY_LAYER_FT = 2500.0
 #: Fraction of the free-stream wind still blowing at the surface.
 SURFACE_WIND_FRACTION = 0.35
 
+#: Which simulator event moves which light or sign, and how.
+LIGHT_EVENTS = {
+    "LANDING_LIGHTS_ON": ("light_landing", "on"),
+    "LANDING_LIGHTS_OFF": ("light_landing", "off"),
+    "LANDING_LIGHTS_TOGGLE": ("light_landing", "toggle"),
+    "STROBES_ON": ("light_strobe", "on"),
+    "STROBES_OFF": ("light_strobe", "off"),
+    "STROBES_TOGGLE": ("light_strobe", "toggle"),
+    "TOGGLE_TAXI_LIGHTS": ("light_taxi", "toggle"),
+    "TOGGLE_BEACON_LIGHTS": ("light_beacon", "toggle"),
+    "TOGGLE_NAV_LIGHTS": ("light_nav", "toggle"),
+    "TOGGLE_WING_LIGHTS": ("light_wing", "toggle"),
+    "TOGGLE_LOGO_LIGHTS": ("light_logo", "toggle"),
+    "CABIN_SEATBELTS_ALERT_SWITCH_TOGGLE": ("seatbelt_sign", "toggle"),
+    "CABIN_NO_SMOKING_ALERT_SWITCH_TOGGLE": ("no_smoking_sign", "toggle"),
+}
+
 #: Height at which an autoland-capable aeroplane rounds out by itself, and the
 #: rate it holds through the flare.
 AUTOLAND_FLARE_AGL_FT = 50.0
@@ -50,6 +67,10 @@ class MockAircraftModel:
     ground_accel_kt_s: float = 3.2
     braking_kt_s: float = 4.5
     rotate_speed_kt: float = 155.0
+    #: Degrees per second of heading change at full nosewheel deflection, at
+    #: normal taxi speed.
+    nosewheel_rate_deg_s: float = 6.0
+    pushback_speed_kt: float = 3.0
     flap_transit_s: float = 8.0
     gear_transit_s: float = 10.0
     touchdown_agl_ft: float = 10.0
@@ -108,6 +129,9 @@ class MockSim(SimBackend):
         self._flaps_detents = [0.0, 12.5, 25.0, 50.0, 75.0, 100.0]
         self._gear_target_pct = 100.0
         self._spoilers_armed = False
+        self.tug_heading_deg = 0.0
+        self.steering = 0.0
+        self.wheel_brakes = 0.0
         self._events: list[tuple[str, int]] = []
         self._lvars: dict[str, float] = {}
         self._vars: dict[str, float] = {}
@@ -237,8 +261,27 @@ class MockSim(SimBackend):
             self.throttle_pct = clamp(value / 16383.0 * 100.0, 0.0, 100.0)
         elif e == "PARKING_BRAKES":
             st.parking_brake = not st.parking_brake
+        elif e == "RUDDER_SET":
+            self.steering = clamp(value / 16383.0, -1.0, 1.0)
+        elif e in ("AXIS_LEFT_BRAKE_SET", "AXIS_RIGHT_BRAKE_SET"):
+            self.wheel_brakes = clamp(value / 16383.0, 0.0, 1.0)
         elif e == "THROTTLE_CUT":
             self.throttle_pct = 0.0
+        elif e in LIGHT_EVENTS:
+            field, action = LIGHT_EVENTS[e]
+            if action == "on":
+                setattr(st, field, True)
+            elif action == "off":
+                setattr(st, field, False)
+            else:
+                setattr(st, field, not getattr(st, field))
+        elif e == "TOGGLE_PUSHBACK":
+            st.pushback_attached = not st.pushback_attached
+            st.pushback_state = 0 if st.pushback_attached else 3
+        elif e == "KEY_TUG_HEADING":
+            # The heading the aeroplane is to end up facing, scaled across the
+            # range of a 32-bit unsigned integer.
+            self.tug_heading_deg = (value / 4294967296.0) * 360.0
 
     # -- Integration ---------------------------------------------------------
     def poll(self, dt: float) -> SimState:
@@ -304,11 +347,20 @@ class MockSim(SimBackend):
     def _step_speed(self, dt: float) -> None:
         st = self.state
         m = self.model
+        if st.pushback_attached:
+            st.ias_kt = m.pushback_speed_kt
+            return
         if st.on_ground and not self.landed:
             if self.throttle_pct > 50.0:
                 st.ias_kt += m.ground_accel_kt_s * dt
+            elif self.throttle_pct > 3.0:
+                # Taxi power: a modest acceleration that drag and brakes fight.
+                thrust = m.ground_accel_kt_s * (self.throttle_pct / 60.0)
+                drag = 0.5 + m.braking_kt_s * self.wheel_brakes
+                st.ias_kt = max(0.0, st.ias_kt + (thrust - drag) * dt)
             else:
-                st.ias_kt = max(0.0, st.ias_kt - m.braking_kt_s * dt)
+                st.ias_kt = max(0.0, st.ias_kt
+                                - (m.braking_kt_s * max(0.25, self.wheel_brakes)) * dt)
         elif st.on_ground and self.landed:
             brake = m.braking_kt_s * (1.6 if st.spoilers_pct > 50 else 1.0)
             st.ias_kt = max(0.0, st.ias_kt - brake * dt)
@@ -396,9 +448,24 @@ class MockSim(SimBackend):
     def _step_lateral(self, dt: float) -> None:
         st = self.state
         m = self.model
-        if st.on_ground and st.ias_kt < 40:
-            st.heading_true_deg = normalize_deg(self.target_heading)
+        if st.on_ground:
             st.bank_deg = 0.0
+            if st.pushback_attached:
+                # The tug turns the aeroplane; it does not teleport it.
+                error = signed_diff_deg(self.tug_heading_deg, st.heading_true_deg)
+                st.heading_true_deg = normalize_deg(
+                    st.heading_true_deg + max(-4.0 * dt, min(4.0 * dt, error))
+                )
+                return
+            # Nosewheel steering, which does nothing at a standstill and less
+            # as the aeroplane speeds up -- both of which matter to a taxi
+            # controller, and neither of which an earlier version modelled: it
+            # simply set the heading to whatever was asked for.
+            speed_factor = min(1.0, max(0.0, st.ground_speed_kt) / 12.0)
+            if st.ground_speed_kt > 45.0:
+                speed_factor *= 45.0 / st.ground_speed_kt
+            rate = self.steering * m.nosewheel_rate_deg_s * speed_factor
+            st.heading_true_deg = normalize_deg(st.heading_true_deg + rate * dt)
             return
         error = signed_diff_deg(self.target_heading, st.heading_true_deg)
         commanded_bank = clamp(error * 1.5, -m.max_bank_deg, m.max_bank_deg)
@@ -426,6 +493,13 @@ class MockSim(SimBackend):
 
     def _step_position(self, dt: float) -> None:
         st = self.state
+        if st.pushback_attached and st.on_ground:
+            st.ground_speed_kt = self.model.pushback_speed_kt
+            st.track_true_deg = normalize_deg(st.heading_true_deg + 180.0)
+            moved = st.ground_speed_kt * (dt / 3600.0)
+            new_position = destination_point(st.position, st.track_true_deg, moved)
+            st.lat, st.lon = new_position.lat, new_position.lon
+            return
         # Wind triangle: air vector plus wind vector gives the ground vector.
         hdg = math.radians(st.heading_true_deg)
         air_n = st.tas_kt * math.cos(hdg)

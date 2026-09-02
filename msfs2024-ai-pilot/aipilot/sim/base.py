@@ -81,6 +81,24 @@ class SimState:
     nav1_glideslope_error_deg: float = 0.0
     nav1_obs_deg: float = 0.0
 
+    # Lights and cabin signs. Every one of these is operated by a *toggle*
+    # event, so commanding one blind is a coin flip: half the time it does the
+    # opposite of what was asked. Reading the state first is what makes them
+    # reliable.
+    light_beacon: bool = False
+    light_nav: bool = False
+    light_landing: bool = False
+    light_taxi: bool = False
+    light_strobe: bool = False
+    light_wing: bool = False
+    light_logo: bool = False
+    seatbelt_sign: bool = False
+    no_smoking_sign: bool = False
+
+    # Ground handling
+    pushback_attached: bool = False
+    pushback_state: int = 3            # 0 straight, 1 left, 2 right, 3 none
+
     # Housekeeping
     sim_rate: float = 1.0
     sim_time_s: float = 0.0

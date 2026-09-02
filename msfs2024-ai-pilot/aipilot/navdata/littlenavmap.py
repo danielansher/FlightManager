@@ -27,7 +27,15 @@ import sqlite3
 from typing import Optional
 
 from ..geo import LatLon, normalize_deg
-from .base import Airport, NavDataProvider, Runway, Waypoint
+from .base import (
+    Airport,
+    GroundLayout,
+    NavDataProvider,
+    Parking,
+    Runway,
+    TaxiPath,
+    Waypoint,
+)
 
 #: Little Navmap's database file names, newest simulator first.
 DEFAULT_DB_NAMES = (
@@ -106,7 +114,8 @@ class LittleNavmapProvider(NavDataProvider):
         except sqlite3.Error as exc:
             self._error = f"Could not open the database: {exc}"
             return None
-        for table in ("airport", "runway", "runway_end", "ils", "waypoint", "vor", "ndb"):
+        for table in ("airport", "runway", "runway_end", "ils", "waypoint", "vor",
+                      "ndb", "taxi_path", "parking"):
             self._columns[table] = self._table_columns(table)
         if not self._columns.get("airport"):
             self._error = "This SQLite file has no 'airport' table -- is it a Little Navmap database?"
@@ -299,3 +308,114 @@ class LittleNavmapProvider(NavDataProvider):
                 if d < best_distance:
                     best, best_distance = point, d
         return best
+
+    # -- Ground layout -------------------------------------------------------
+    def ground_layout(self, icao: str) -> Optional[GroundLayout]:
+        """Taxiway centrelines and stands for an airport.
+
+        Little Navmap compiles these from the scenery, which is what makes
+        automatic taxiing possible at all: they are the same centrelines the
+        aeroplane is painted on top of, so following them keeps it on the
+        pavement and away from the buildings. There is no way to ask
+        SimConnect about scenery objects, so "avoiding things" means "staying
+        on the taxiways", and this is where the taxiways come from.
+        """
+        conn = self._connect()
+        if conn is None or not self._columns.get("taxi_path"):
+            return None
+        ident_col = self._pick("airport", "ident", "icao")
+        if not ident_col:
+            return None
+        try:
+            row = conn.execute(
+                f"SELECT airport_id FROM airport WHERE {ident_col} = ? "
+                "COLLATE NOCASE LIMIT 1", (icao.strip().upper(),)
+            ).fetchone()
+        except sqlite3.Error as exc:
+            self._error = str(exc)
+            return None
+        if row is None:
+            return None
+        airport_id = row["airport_id"]
+        return GroundLayout(
+            icao=icao.strip().upper(),
+            taxi_paths=self._taxi_paths(conn, airport_id),
+            parking=self._parking(conn, airport_id),
+        )
+
+    def _taxi_paths(self, conn: sqlite3.Connection, airport_id: int) -> tuple:
+        start_lat = self._pick("taxi_path", "start_laty", "start_lat")
+        start_lon = self._pick("taxi_path", "start_lonx", "start_lon")
+        end_lat = self._pick("taxi_path", "end_laty", "end_lat")
+        end_lon = self._pick("taxi_path", "end_lonx", "end_lon")
+        if not (start_lat and start_lon and end_lat and end_lon):
+            return ()
+        name_col = self._pick("taxi_path", "name")
+        type_col = self._pick("taxi_path", "type")
+        width_col = self._pick("taxi_path", "width")
+        try:
+            rows = conn.execute(
+                "SELECT * FROM taxi_path WHERE airport_id = ?", (airport_id,)
+            ).fetchall()
+        except sqlite3.Error as exc:
+            self._error = str(exc)
+            return ()
+
+        out = []
+        for row in rows:
+            try:
+                start = LatLon(float(row[start_lat]), float(row[start_lon]))
+                end = LatLon(float(row[end_lat]), float(row[end_lon]))
+            except (TypeError, ValueError):
+                continue
+            kind = str(row[type_col]).lower() if type_col and row[type_col] else "taxi"
+            # Vehicle roads are in the same table and are emphatically not for
+            # aeroplanes.
+            if "vehicle" in kind or "road" in kind:
+                continue
+            out.append(TaxiPath(
+                start=start, end=end,
+                name=str(row[name_col]) if name_col and row[name_col] else "",
+                kind=kind,
+                width_ft=float(row[width_col]) if width_col and row[width_col] else 75.0,
+            ))
+        return tuple(out)
+
+    def _parking(self, conn: sqlite3.Connection, airport_id: int) -> tuple:
+        if not self._columns.get("parking"):
+            return ()
+        lat_col = self._pick("parking", "laty", "lat")
+        lon_col = self._pick("parking", "lonx", "lon")
+        if not (lat_col and lon_col):
+            return ()
+        name_col = self._pick("parking", "name")
+        number_col = self._pick("parking", "number")
+        heading_col = self._pick("parking", "heading")
+        radius_col = self._pick("parking", "radius")
+        type_col = self._pick("parking", "type")
+        try:
+            rows = conn.execute(
+                "SELECT * FROM parking WHERE airport_id = ?", (airport_id,)
+            ).fetchall()
+        except sqlite3.Error:
+            return ()
+
+        out = []
+        for row in rows:
+            try:
+                position = LatLon(float(row[lat_col]), float(row[lon_col]))
+            except (TypeError, ValueError):
+                continue
+            label = str(row[name_col]) if name_col and row[name_col] else "STAND"
+            if number_col and row[number_col] is not None:
+                label = f"{label} {row[number_col]}"
+            out.append(Parking(
+                name=label.strip(),
+                position=position,
+                heading_true_deg=float(row[heading_col])
+                if heading_col and row[heading_col] is not None else 0.0,
+                radius_ft=float(row[radius_col])
+                if radius_col and row[radius_col] is not None else 75.0,
+                kind=str(row[type_col]).lower() if type_col and row[type_col] else "gate",
+            ))
+        return tuple(out)
