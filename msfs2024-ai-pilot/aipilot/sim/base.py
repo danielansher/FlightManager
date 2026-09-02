@@ -99,6 +99,13 @@ class SimState:
     pushback_attached: bool = False
     pushback_state: int = 3            # 0 straight, 1 left, 2 right, 3 none
 
+    # Thrust. Where the levers actually are, as against where the AI Pilot
+    # asked for them to be: the difference between the two is the whole of
+    # several diagnoses, and without it a trace can only show what was
+    # commanded and not whether anything happened.
+    throttle_percent: float = 0.0
+    engine_n1_pct: float = 0.0
+
     # Housekeeping
     sim_rate: float = 1.0
     sim_time_s: float = 0.0

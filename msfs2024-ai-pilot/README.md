@@ -76,6 +76,8 @@ has to be typed:
 | `Find-SimConnect.bat` | finds SimConnect.dll on your PC and puts it in place |
 | `Fly.bat` | asks where to, then flies there |
 | `Fly-My-SimBrief-Plan.bat` | flies the plan you last made in SimBrief |
+| `Fly-With-Debug.bat` | the same, but records a trace for diagnosis |
+| `Read-Debug-Trace.bat` | summarises the newest trace and says what looks wrong |
 | `AI-Pilot-Panel.bat` | opens the control panel in your browser |
 
 You never touch the simulator's own AI Pilot — this replaces it, and leaving it
@@ -152,6 +154,7 @@ two hundred feet, stable and configured, and tells you so.
 --cruise 350                  # force a flight level
 --wind 250/45                 # plan against a wind you name
 --simbrief YOUR_USERNAME      # fly your latest SimBrief plan, runways and all
+--debug                       # record a trace of the flight, for diagnosis
 --no-metar                    # do not look up the weather; plan as if calm
 --airborne                    # engage with the aeroplane already flying
 --msfs 2020                   # which sim, when you have both installed
@@ -185,6 +188,26 @@ python -m aipilot fly --simbrief YOUR_SIMBRIEF_USERNAME
 
 [docs/RUNWAYS.md](docs/RUNWAYS.md) has the full order of preference, what gets
 taken from a SimBrief release, and why FlightRadar24 is not one of the sources.
+
+## When something goes wrong
+
+Fly it again with `--debug` and it writes down what happened — what the
+aeroplane was doing, what the AI Pilot asked for, and every event it sent to the
+simulator. Then:
+
+```bash
+python -m aipilot debug-report logs/flight-20260902-183342-KJFKKIAD.jsonl
+```
+
+which prints the phase timeline, a count of every command sent, and a list of
+what looks wrong. On Windows that is `Fly-With-Debug.bat` and
+`Read-Debug-Trace.bat`.
+
+The command trace is the part that matters: an event repeated every cycle is
+invisible in any summary and obvious here. It found one the first time it ran —
+TOGA being pressed 296 times in a single takeoff roll. Nothing personal goes in
+the file, and your home directory is stripped out of any path.
+[docs/DEBUG.md](docs/DEBUG.md) covers the rest.
 
 ## If the autopilot keeps dropping out
 
@@ -260,7 +283,7 @@ at — and if not, where it looked and what would fix it.
 python -m pytest tests/ -q
 ```
 
-219 tests. The suite flies complete flights — brakes off to a full stop — against
+239 tests. The suite flies complete flights — brakes off to a full stop — against
 a point-mass simulator that speaks the same protocol as SimConnect. Every
 aircraft in the fleet, a twenty-hour long haul, a date-line crossing, a forced
 go-around, nine real routes out of Kennedy, and four different control rates.
@@ -278,6 +301,11 @@ bug rather than merely being approximate:
 - A landed aeroplane can taxi again instead of braking for ever.
 - Wind no longer blows a parked aeroplane across the apron.
 
+`tests/test_debug.py` replays the failures that actually happened — the tug that
+would not let go, the four-hundred-knot descent, an aeroplane held on its stand —
+and checks the report names each one, so the recorder is held to being useful
+rather than merely present.
+
 ## Layout
 
 ```
@@ -287,6 +315,7 @@ aipilot/
   metar.py          real-world wind, so the runway choice is not a guess
   simbrief.py       import the flight plan you already made
   briefing.py       decides which wind to plan each end with
+  debug.py          the flight recorder, and the report that reads it back
   sim/              SimConnect over ctypes, the MobiFlight bridge, the mock
   navdata/          Little Navmap, OurAirports, the bundled sample
   route/            flight plan, planner, vertical profile

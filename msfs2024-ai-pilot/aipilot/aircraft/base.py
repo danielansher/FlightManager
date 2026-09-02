@@ -211,13 +211,22 @@ class AircraftAdapter:
             self._autothrottle_on = False
 
     def takeoff_thrust(self) -> None:
-        """Set takeoff or go-around thrust. Safe to call every cycle."""
+        """Set takeoff or go-around thrust. Safe to call every cycle.
+
+        TOGA is pressed once per takeoff or go-around, not once per cycle.
+        It used to be sent unconditionally, which put nearly three hundred
+        presses into a single takeoff roll: harmless on most aeroplanes,
+        since the second press does nothing, but not on the ones where
+        pressing it again cycles the mode -- and it buries a trace in noise
+        that makes a real fault harder to see. ``clear_takeoff_thrust``
+        resets the flag so a go-around presses it again.
+        """
         if self._throttle != 100.0:
             self._throttle = 100.0
             self.sim.send_event("THROTTLE_SET", 16383)
-        self.sim.send_event("AUTO_THROTTLE_TO_GA")
         if not self._toga:
             self._toga = True
+            self.sim.send_event("AUTO_THROTTLE_TO_GA")
             self.log("Takeoff thrust set")
 
     def clear_takeoff_thrust(self) -> None:

@@ -91,6 +91,11 @@ def build_parser() -> argparse.ArgumentParser:
     fly.add_argument("--no-go-around", action="store_true",
                      help="continue an unstable approach instead of going around")
     fly.add_argument("--quiet", action="store_true", help="log only, no status line")
+    fly.add_argument("--debug", action="store_true",
+                     help="record a flight trace to logs/, for diagnosing a "
+                          "problem afterwards or sending to someone")
+    fly.add_argument("--debug-file", metavar="PATH",
+                     help="write the trace here instead of logs/")
 
     plan = subparsers.add_parser("plan", help="print the flight plan and stop")
     add_common(plan)
@@ -101,6 +106,14 @@ def build_parser() -> argparse.ArgumentParser:
     ui.add_argument("--open", action="store_true", help="open a browser window")
 
     subparsers.add_parser("aircraft", help="list the aeroplanes it knows how to fly")
+
+    report = subparsers.add_parser(
+        "debug-report",
+        help="summarise a flight trace recorded with --debug, and say what "
+             "looks wrong")
+    report.add_argument("path", help="the .jsonl file written by --debug")
+    report.add_argument("--events", action="store_true",
+                        help="also print the whole event log")
 
     find = subparsers.add_parser(
         "find-simconnect",
@@ -360,6 +373,12 @@ def command_fly(args) -> int:
         print(f"Could not connect to the simulator: {exc}", file=sys.stderr)
         return 1
 
+    recorder = _start_recorder(args)
+    if recorder is not None:
+        from .debug import RecordingBackend
+
+        sim = RecordingBackend(sim, recorder)
+
     adapter, _ = build_adapter(key, sim)
 
     if args.sim == "msfs":
@@ -383,9 +402,19 @@ def command_fly(args) -> int:
         taxi=not args.no_taxi,
     )
     printer = _Printer(quiet=args.quiet)
+
+    def on_event(event) -> None:
+        printer.on_event(event)
+        if recorder is not None:
+            recorder.event(event.time_s, event.phase.value, event.message,
+                           event.level)
+
     pilot = AIPilot(sim, adapter, profile, plan, options,
-                    listener=printer.on_event, ground=ground,
+                    listener=on_event, ground=ground,
                     arrival_ground=arrival_ground)
+    if recorder is not None:
+        _write_header(recorder, args, key, profile, navdata, plan, options,
+                      sim, ground, arrival_ground)
 
     pilot.engage()
     # The control step stays fixed whatever the time multiplier. Speeding up by
@@ -400,6 +429,8 @@ def command_fly(args) -> int:
             started = time.monotonic()
             status = pilot.update(period)
             printer.on_status(status)
+            if recorder is not None:
+                recorder.sample(pilot.elapsed_s, sim.poll(0.0), status)
             remaining = period / speed - (time.monotonic() - started)
             if remaining > 0:
                 time.sleep(remaining)
@@ -408,6 +439,20 @@ def command_fly(args) -> int:
         print("\nInterrupted. The autopilot is left as it is -- take over manually.")
         return 130
     finally:
+        if recorder is not None:
+            recorder.finish(phase=pilot.phase.value,
+                            reason=pilot.status.message,
+                            elapsed_s=round(pilot.elapsed_s, 1))
+            print(f"\nFlight trace written to {recorder.path}")
+            print(f"Summarise it with:  python -m aipilot debug-report "
+                  f"{recorder.path}")
+        elif pilot.phase is not Phase.COMPLETE:
+            # It did not finish, and there is nothing to look at afterwards.
+            # Say so now rather than leaving the next attempt just as blind.
+            print("\nThat did not finish. Run it again with --debug and it "
+                  "will record what happened:")
+            print(f"  python -m aipilot fly {args.origin} {args.destination} "
+                  "--debug")
         sim.close()
         navdata.close()
     printer.finish()
@@ -454,6 +499,66 @@ def _match_departure_to_sim_wind(sim, args, plan, profile, report) -> None:
     report(f"  The simulator's wind is {wind.from_deg:03.0f} at "
            f"{wind.speed_kt:.0f} kt, so departing runway {chosen.ident} "
            f"instead of {was}.")
+
+
+def _start_recorder(args):
+    """Open a flight trace, if one was asked for."""
+    if not getattr(args, "debug", False) and not getattr(args, "debug_file", None):
+        return None
+    from .debug import FlightRecorder, default_path
+
+    path = getattr(args, "debug_file", None) or default_path(
+        args.origin or "", args.destination or "")
+    try:
+        return FlightRecorder(path)
+    except OSError as exc:
+        print(f"Could not open a flight trace at {path}: {exc}", file=sys.stderr)
+        return None
+
+
+def _write_header(recorder, args, key, profile, navdata, plan, options, sim,
+                  ground, arrival_ground) -> None:
+    from . import __version__
+    from .debug import redact
+
+    dep = plan.departure_runway.ident if plan.departure_runway else "?"
+    arr = plan.arrival_runway.ident if plan.arrival_runway else "?"
+    recorder.header(
+        version=__version__,
+        aircraft=f"{key} ({profile.name})",
+        vmo_kt=profile.vmo_kt,
+        sim=redact(getattr(sim, "host_description", None) or sim.name),
+        navdata=redact(navdata.describe()),
+        route=(f"{plan.origin.icao}/{dep} -> {plan.destination.icao}/{arr}, "
+               f"{plan.total_distance_nm:.0f} nm at "
+               f"FL{plan.cruise_altitude_ft / 100:.0f}, {len(plan.legs)} legs"),
+        runway_notes=list(plan.runway_notes),
+        warnings=list(plan.warnings),
+        ground=_ground_summary(ground, arrival_ground),
+        options={
+            "autoland": options.autoland,
+            "taxi": options.taxi,
+            "lights": options.manage_lights,
+            "configuration": options.manage_configuration,
+            "go_around": options.go_around_if_unstable,
+            "airborne": options.start_airborne,
+            "sim": args.sim,
+            "speed": args.speed,
+        },
+    )
+
+
+def _ground_summary(ground, arrival_ground) -> str:
+    def describe(network, role):
+        if network is None:
+            return f"no {role} taxiway data"
+        layout = getattr(network, "layout", None)
+        stands = len(getattr(layout, "parking", ()) or ())
+        paths = len(getattr(layout, "taxi_paths", ()) or ())
+        return f"{role}: {paths} segments, {stands} stands"
+
+    return "; ".join((describe(ground, "departure"),
+                      describe(arrival_ground, "arrival")))
 
 
 def _ground_networks(navdata, plan, report):
@@ -558,8 +663,36 @@ def command_lvars(args) -> int:
     return run_lvars(args)
 
 
+def command_debug_report(args) -> int:
+    from .debug import analyse, format_report
+
+    try:
+        report = analyse(args.path)
+    except OSError as exc:
+        print(f"Could not read {args.path}: {exc}", file=sys.stderr)
+        return 1
+    if not report.header and not report.events:
+        print(f"{args.path} does not look like a flight trace.", file=sys.stderr)
+        return 1
+
+    print(format_report(report))
+    if args.events:
+        print()
+        print("Event log")
+        print("---------")
+        for event in report.events:
+            minutes, seconds = divmod(int(event.get("at", 0)), 60)
+            mark = {"warning": " !", "error": "!!"}.get(event.get("level"), "  ")
+            print(f" {mark} [{minutes:02d}:{seconds:02d}] "
+                  f"{event.get('phase', ''):<9} {event.get('message', '')}")
+    # A trace with something wrong in it is worth a non-zero exit, so this can
+    # be used in a script.
+    return 1 if any(f.severity == "error" for f in report.findings) else 0
+
+
 COMMANDS = {
     "fly": command_fly,
+    "debug-report": command_debug_report,
     "plan": command_plan,
     "ui": command_ui,
     "aircraft": command_aircraft,

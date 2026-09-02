@@ -49,6 +49,7 @@ class FlightSession:
         self.error: Optional[str] = None
         self.speed = 1.0
         self.ground_notes: list[str] = []
+        self.recorder = None
 
     # -- Planning ------------------------------------------------------------
     def build_plan(self, request: dict) -> dict:
@@ -166,6 +167,18 @@ class FlightSession:
         sim = self._make_sim(use_mock, plan, profile, wind,
                              bool(request.get("airborne")))
 
+        self.recorder = None
+        if request.get("debug"):
+            from ..debug import FlightRecorder, RecordingBackend, default_path
+
+            try:
+                self.recorder = FlightRecorder(
+                    default_path(plan.origin.icao, plan.destination.icao))
+                sim = RecordingBackend(sim, self.recorder)
+            except OSError as exc:
+                self.recorder = None
+                self.ground_notes = [f"Could not open a flight trace: {exc}"]
+
         adapter, _ = build_adapter(key, sim)
         options = PilotOptions(
             autoland=request.get("autoland", "auto"),
@@ -183,8 +196,35 @@ class FlightSession:
             ground, arrival_ground = _ground_networks(self.navdata, plan,
                                                       notes.append)
             self.ground_notes = notes
+        listener = None
+        if self.recorder is not None:
+            def listener(event) -> None:                # noqa: F811
+                self.recorder.event(event.time_s, event.phase.value,
+                                    event.message, event.level)
+
         pilot = AIPilot(sim, adapter, profile, plan, options, ground=ground,
-                        arrival_ground=arrival_ground)
+                        arrival_ground=arrival_ground, listener=listener)
+        if self.recorder is not None:
+            from .. import __version__
+            from ..debug import redact
+            from ..cli import _ground_summary
+
+            self.recorder.header(
+                version=__version__,
+                aircraft=f"{key} ({profile.name})",
+                vmo_kt=profile.vmo_kt,
+                sim=redact(getattr(sim, "host_description", None) or sim.name),
+                navdata=redact(self.navdata.describe()) if self.navdata else "",
+                route=(f"{plan.origin.icao} -> {plan.destination.icao}, "
+                       f"{plan.total_distance_nm:.0f} nm at "
+                       f"FL{plan.cruise_altitude_ft / 100:.0f}"),
+                runway_notes=list(plan.runway_notes),
+                warnings=list(plan.warnings),
+                ground=_ground_summary(ground, arrival_ground),
+                options={"autoland": options.autoland, "taxi": options.taxi,
+                         "sim": "mock" if use_mock else "msfs",
+                         "speed": self.speed},
+            )
 
         with self.lock:
             self.sim = sim
@@ -196,7 +236,8 @@ class FlightSession:
             pilot.log.add(0.0, pilot.phase, note)
         self.thread = threading.Thread(target=self._run, daemon=True, name="aipilot")
         self.thread.start()
-        return {"ok": True, "adapter": adapter.describe()}
+        return {"ok": True, "adapter": adapter.describe(),
+                "trace": self.recorder.path if self.recorder else ""}
 
     def _make_sim(self, use_mock: bool, plan, profile, wind, airborne: bool):
         if use_mock:
@@ -238,7 +279,10 @@ class FlightSession:
             while not self.stop_flag.is_set() and \
                     pilot.phase not in (Phase.COMPLETE, Phase.ABORTED):
                 started = time.monotonic()
-                pilot.update(period)
+                status = pilot.update(period)
+                if self.recorder is not None and self.sim is not None:
+                    self.recorder.sample(pilot.elapsed_s, self.sim.poll(0.0),
+                                         status)
                 remaining = period / self.speed - (time.monotonic() - started)
                 if remaining > 0:
                     time.sleep(remaining)
@@ -246,6 +290,13 @@ class FlightSession:
             with self.lock:
                 self.error = f"{type(exc).__name__}: {exc}"
         finally:
+            if self.recorder is not None:
+                try:
+                    self.recorder.finish(phase=pilot.phase.value,
+                                         reason=pilot.status.message,
+                                         elapsed_s=round(pilot.elapsed_s, 1))
+                except Exception:
+                    pass
             if self.sim is not None:
                 try:
                     self.sim.close()

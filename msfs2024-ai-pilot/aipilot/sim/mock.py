@@ -298,6 +298,10 @@ class MockSim(SimBackend):
     def poll(self, dt: float) -> SimState:
         if dt > 0:
             self.step(dt)
+        # The lever position the simulator reports back, as against the one
+        # that was commanded. The flight recorder compares the two.
+        self.state.throttle_percent = self.throttle_pct
+        self.state.engine_n1_pct = min(100.0, 20.0 + self.throttle_pct * 0.8)
         return self.state
 
     def _start_airborne(self, altitude_ft: float) -> None:

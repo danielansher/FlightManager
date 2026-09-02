@@ -32,6 +32,7 @@ function request() {
     speed: parseFloat($('speed').value) || 1,
     autoland: $('autoland').value,
     airborne: $('airborne').checked,
+    debug: $('debug').checked,
   };
 }
 
@@ -97,6 +98,12 @@ $('engage-btn').addEventListener('click', async () => {
     if (!reply.ok) { showMessages([], reply.error); $('engage-btn').disabled = false; return; }
     state.eventCount = 0;
     $('log').innerHTML = '';
+    if (reply.trace) {
+      showMessages([], null, [
+        `Recording a debug trace to ${reply.trace}. When the flight ends, `
+        + `summarise it with:  python -m aipilot debug-report ${reply.trace}`,
+      ]);
+    }
     ['readout', 'log-panel'].forEach((id) => { $(id).hidden = false; });
     $('stop-btn').hidden = false;
     startPolling();

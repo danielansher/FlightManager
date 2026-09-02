@@ -9,3 +9,7 @@ SimConnect.dll
 navdata/
 airports.csv
 runways.csv
+
+# Flight traces written by --debug.
+logs/
+*.jsonl

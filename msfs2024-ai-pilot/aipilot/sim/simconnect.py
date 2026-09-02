@@ -160,6 +160,11 @@ FLIGHT_STATE_VARS: tuple[VarSpec, ...] = (
     VarSpec("pushback_state", "PUSHBACK STATE", "number", int),
     VarSpec("sim_rate", "SIMULATION RATE", "number"),
     VarSpec("sim_time_s", "ABSOLUTE TIME", "seconds"),
+    # Appended, which is the only safe way to change this list: the order is
+    # the wire format the simulator sends the payload back in.
+    VarSpec("throttle_percent", "GENERAL ENG THROTTLE LEVER POSITION:1",
+            "percent"),
+    VarSpec("engine_n1_pct", "TURB ENG N1:1", "percent"),
 )
 
 #: Where SimConnect.dll usually lives, for both simulators. The SDK copies are
