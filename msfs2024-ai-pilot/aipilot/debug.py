@@ -386,9 +386,13 @@ def analyse(path: str) -> Report:
     # The totals record is written when a flight ends, and the traces worth
     # reading are often from one that was killed before it did. Fall back to
     # counting the command records themselves, which are all still there.
-    report.commands = (totals if isinstance(totals, dict)
+    # Both halves matter: a totals record that is present but empty, or of
+    # the wrong shape, must still fall back to counting the command records --
+    # which is the case for every trace from a flight that was killed.
+    report.commands = (totals if isinstance(totals, dict) and totals
                        else dict(counted.most_common()))
-    report.command_spans = spans if isinstance(spans, dict) else seen_spans
+    report.command_spans = (spans if isinstance(spans, dict) and spans
+                            else seen_spans)
     report.samples = len(samples)
     if records:
         report.duration_s = max(_num(r.get("at")) for r in records)
