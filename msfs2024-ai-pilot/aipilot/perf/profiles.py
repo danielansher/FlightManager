@@ -54,6 +54,10 @@ class AircraftProfile:
     initial_climb_speed_kt: float = 180.0
 
     # Envelope
+    #: Maximum operating speed. The protection that keeps a descent from
+    #: becoming an overspeed needs a number, and this is it.
+    vmo_kt: float = 340.0
+    max_mach: float = 0.89
     max_altitude_ft: float = 43000.0
     typical_cruise_ft: float = 37000.0
     max_climb_rate_fpm: float = 2500.0
@@ -148,6 +152,7 @@ def _register(profile: AircraftProfile) -> AircraftProfile:
 
 B787_10 = _register(AircraftProfile(
     key="b787-10",
+    vmo_kt=350.0, max_mach=0.9,
     name="Boeing 787-10 Dreamliner",
     icao_type="B78X",
     climb_speed_kt=300.0, climb_mach=0.84,
@@ -169,6 +174,7 @@ B787_9 = _register(replace(
 
 A350_900 = _register(AircraftProfile(
     key="a350-900",
+    vmo_kt=340.0, max_mach=0.89,
     name="Airbus A350-900 (iniBuilds)",
     icao_type="A359",
     climb_speed_kt=300.0, climb_mach=0.84,
@@ -191,6 +197,7 @@ A350_1000 = _register(replace(
 
 A380_800 = _register(AircraftProfile(
     key="a380-800",
+    vmo_kt=340.0, max_mach=0.89,
     name="Airbus A380-800",
     icao_type="A388",
     climb_speed_kt=300.0, climb_mach=0.84,
@@ -209,6 +216,7 @@ A380_800 = _register(AircraftProfile(
 
 A330_900 = _register(AircraftProfile(
     key="a330-900",
+    vmo_kt=330.0, max_mach=0.86,
     name="Airbus A330-900neo (Headwind)",
     icao_type="A339",
     climb_speed_kt=300.0, climb_mach=0.82,
@@ -225,6 +233,7 @@ A330_900 = _register(AircraftProfile(
 
 A320_NEO = _register(AircraftProfile(
     key="a320neo",
+    vmo_kt=350.0, max_mach=0.82,
     name="Airbus A320neo",
     icao_type="A20N",
     climb_speed_kt=290.0, climb_mach=0.78,

@@ -62,6 +62,11 @@ BASE_LEG_OFFSET_NM = 9.0
 #: onto it near the field rather than miles short of it.
 DOWNWIND_ENTRY_NM = 3.0
 
+#: Track miles an airliner needs per thousand feet, climbing and descending.
+#: Used to decide whether a cruise level is reachable at all on a short sector.
+CLIMB_NM_PER_1000FT = 3.0
+DESCENT_NM_PER_1000FT = 3.4
+
 #: Enroute great-circle segments longer than this get split, so that progress,
 #: ETA and the map have something to work with.
 MAX_SEGMENT_NM = 250.0
@@ -125,10 +130,29 @@ def _departure_legs(origin: Airport, runway: Optional[Runway]) -> list[RouteLeg]
     return legs
 
 
+def approach_scale(direct_distance_nm: float) -> float:
+    """How much to shrink the outer approach geometry on a short sector.
+
+    The circuit and base leg are sized for an aeroplane arriving from a long
+    way away. Applied unchanged to a fifteen mile hop they are longer than the
+    flight: Los Angeles to Burbank came out as a ninety-four mile route whose
+    turning point was forty-five miles from the departure runway, on the far
+    side of the destination and through the mountains behind it.
+
+    The *final* approach is never scaled. Five miles at a thousand six hundred
+    feet is what makes an approach stabilised, and it does not get shorter
+    because the flight was short.
+    """
+    if direct_distance_nm >= 120.0:
+        return 1.0
+    return max(0.45, direct_distance_nm / 120.0)
+
+
 def _approach_legs(destination: Airport, runway: Optional[Runway],
                    profile: AircraftProfile,
                    inbound_course_deg: Optional[float] = None,
-                   style: str = "straight") -> list[RouteLeg]:
+                   style: str = "straight",
+                   scale: float = 1.0) -> list[RouteLeg]:
     """Built backwards from the threshold along the approach course.
 
     A straight-in join works only when the aeroplane is already pointing more
@@ -166,6 +190,9 @@ def _approach_legs(destination: Airport, runway: Optional[Runway],
 
     legs: list[RouteLeg] = []
     approach_course = runway.approach_course_true_deg
+    intercept_nm = max(APPROACH_GATE_NM + 2.0, APPROACH_INTERCEPT_NM * scale)
+    base_nm = max(intercept_nm + 4.0, BASE_LEG_DISTANCE_NM * scale)
+    offset_nm = max(3.0, BASE_LEG_OFFSET_NM * scale)
 
     def offset_fix(name: str, along_nm: float, across_nm: float, side: float,
                    height_nm: float) -> RouteLeg:
@@ -191,20 +218,16 @@ def _approach_legs(destination: Airport, runway: Optional[Runway],
             # across, then turn final. Three legs and two ninety degree turns
             # with room between them -- which is what a radar pattern is --
             # instead of one impossible reversal.
-            legs.append(offset_fix("DW", -DOWNWIND_ENTRY_NM, BASE_LEG_OFFSET_NM,
-                                   side, BASE_LEG_DISTANCE_NM))
-            legs.append(offset_fix("BASE", BASE_LEG_DISTANCE_NM, BASE_LEG_OFFSET_NM,
-                                   side, BASE_LEG_DISTANCE_NM))
-            legs.append(offset_fix("FIN", BASE_LEG_DISTANCE_NM, 0.0, side,
-                                   BASE_LEG_DISTANCE_NM))
+            legs.append(offset_fix("DW", -DOWNWIND_ENTRY_NM, offset_nm, side, base_nm))
+            legs.append(offset_fix("BASE", base_nm, offset_nm, side, base_nm))
+            legs.append(offset_fix("FIN", base_nm, 0.0, side, base_nm))
         else:
             # A crossing arrival: one base leg gives about a forty degree
             # intercept with the whole final approach left in which to settle.
-            legs.append(offset_fix("BASE", BASE_LEG_DISTANCE_NM, BASE_LEG_OFFSET_NM,
-                                   side, BASE_LEG_DISTANCE_NM))
+            legs.append(offset_fix("BASE", base_nm, offset_nm, side, base_nm))
 
     legs += [
-        at(APPROACH_INTERCEPT_NM, "approach", profile.terminal_speed_kt),
+        at(intercept_nm, "approach", profile.terminal_speed_kt),
         at(APPROACH_GATE_NM, "approach", 180.0),
         at(FINAL_FIX_NM, "final", profile.final_approach_speed_kt + 10.0),
         RouteLeg(
@@ -283,8 +306,19 @@ def plan_route(
 
     direct_course = initial_bearing_deg(origin.position, destination.position)
     direct_distance = distance_nm(origin.position, destination.position)
+    requested_cruise = cruise_altitude_ft
     if cruise_altitude_ft is None:
         cruise_altitude_ft = select_cruise_altitude(direct_distance, direct_course, profile)
+    cruise_altitude_ft = _reachable_cruise(
+        cruise_altitude_ft, origin, destination, direct_distance
+    )
+    if requested_cruise is None and cruise_altitude_ft < select_cruise_altitude(
+            direct_distance, direct_course, profile):
+        warnings.append(
+            f"{direct_distance:.0f} nm is too short to climb high and get back "
+            f"down again, so the cruise level was capped at "
+            f"{cruise_altitude_ft:.0f} ft."
+        )
 
     legs = _departure_legs(origin, dep_rwy)
     enroute_start = legs[-1].position
@@ -344,12 +378,41 @@ def plan_route(
             f"{destination.icao} has no runway data, so the approach was built to an "
             "assumed runway and will not line up with the real one."
         )
+    if plan.total_distance_nm > max(direct_distance * 2.5, direct_distance + 40.0):
+        warnings.append(
+            f"The route is {plan.total_distance_nm:.0f} nm for a "
+            f"{direct_distance:.0f} nm trip, because joining "
+            f"{destination.icao}/{arr_rwy.ident if arr_rwy else '?'} from this "
+            "direction needs a circuit. Pick the other runway with "
+            "--arrival-runway if you would rather go straight in."
+        )
     if arr_rwy and not arr_rwy.has_ils:
         warnings.append(
             f"No ILS on {destination.icao}/{arr_rwy.ident}; the approach will be flown "
             "on the computed path rather than on the aeroplane's ILS receiver."
         )
     return plan
+
+
+def _reachable_cruise(cruise_ft: float, origin: Airport, destination: Airport,
+                      direct_distance_nm: float) -> float:
+    """Cap a cruise level at one the sector actually has room for.
+
+    Choosing a level from distance alone gives a fifteen mile hop a cruise of
+    FL190, which needs some sixty track miles to climb to and another sixty to
+    come down from. The aeroplane then reaches top of descent while still
+    climbing, and spends the entire flight in a descent it cannot fly.
+
+    So: work out what is reachable in the distance available, and take the
+    lower of the two.
+    """
+    field = max(origin.elevation_ft, destination.elevation_ft)
+    usable = max(0.0, direct_distance_nm * 0.8)
+    gain = usable / (CLIMB_NM_PER_1000FT + DESCENT_NM_PER_1000FT) * 1000.0
+    # Never plan lower than a sensible minimum enroute height above the fields.
+    floor = field + 2000.0
+    capped = min(cruise_ft, max(field + gain, floor))
+    return round(capped / 1000.0) * 1000.0
 
 
 def _choose_approach(destination: Airport, runway: Optional[Runway],
@@ -367,17 +430,30 @@ def _choose_approach(destination: Airport, runway: Optional[Runway],
     So rather than predicting it, each style is built and measured, and the
     first one that turns out flyable is used.
     """
+    direct = distance_nm(enroute_start, destination.position)
+    scale = approach_scale(direct)
     styles = ("straight", "base", "circuit")
     built: list[RouteLeg] = []
+    fallback: list[RouteLeg] = []
     for style in styles:
-        built = _approach_legs(destination, runway, profile, inbound_course_deg, style)
+        built = _approach_legs(destination, runway, profile, inbound_course_deg,
+                               style, scale)
         if len(built) < 2:
             break
+        if not fallback:
+            fallback = built
+        # An approach whose first fix is further away than the destination is
+        # itself sends the aeroplane past the airport and back, which on a
+        # short sector is most of the flight and over whatever happens to be
+        # behind the field.
+        reach = distance_nm(enroute_start, built[0].position)
+        if reach > max(direct * 1.6, direct + 25.0):
+            continue
         entry = initial_bearing_deg(enroute_start, built[0].position)
         first_leg = initial_bearing_deg(built[0].position, built[1].position)
         if abs(signed_diff_deg(first_leg, entry)) <= MAX_APPROACH_ENTRY_TURN_DEG:
-            break
-    return built
+            return built
+    return built if built else fallback
 
 
 def _choose_runway(airport: Airport, requested: Optional[str], wind_from_deg: float,
@@ -418,3 +494,16 @@ def _drop_backtracks(waypoints: Sequence[Waypoint], start: LatLon,
         out.append(waypoint)
         cursor = waypoint.position
     return out
+
+
+def rebuild_departure(plan, runway: Runway, profile: AircraftProfile) -> None:
+    """Point an existing plan at a different departure runway, in place.
+
+    Used when the aeroplane is lined up on a runway other than the planned one,
+    which is the normal case: the plan picks a runway from the wind, and the
+    pilot taxis wherever the ground controller sent them. Following them is
+    better than arguing, and only the first two legs depend on it.
+    """
+    keep = [leg for leg in plan.legs if leg.phase not in ("takeoff", "departure")]
+    plan.legs = _departure_legs(plan.origin, runway) + keep
+    plan.departure_runway = runway

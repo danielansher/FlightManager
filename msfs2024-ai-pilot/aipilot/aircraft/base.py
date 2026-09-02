@@ -83,6 +83,8 @@ class AircraftAdapter:
         self._approach_armed = False
         self._autothrottle_on = False
         self._toga = False
+        self._throttle: Optional[float] = None
+        self._speedbrake: Optional[float] = None
         self._vs_mode = False
         self._level_change_pending = False
         self._announced_engage = False
@@ -206,7 +208,9 @@ class AircraftAdapter:
 
     def takeoff_thrust(self) -> None:
         """Set takeoff or go-around thrust. Safe to call every cycle."""
-        self.sim.send_event("THROTTLE_SET", 16383)
+        if self._throttle != 100.0:
+            self._throttle = 100.0
+            self.sim.send_event("THROTTLE_SET", 16383)
         self.sim.send_event("AUTO_THROTTLE_TO_GA")
         if not self._toga:
             self._toga = True
@@ -218,7 +222,22 @@ class AircraftAdapter:
 
     def idle_thrust(self) -> None:
         self._toga = False
-        self.sim.send_event("THROTTLE_SET", 0)
+        self.set_throttle_percent(0.0)
+
+    def set_throttle_percent(self, percent: float) -> None:
+        """Move the thrust levers directly, as a percentage.
+
+        Needed because an armed autothrottle is not the same as an autothrottle
+        that is flying the aeroplane. When it does not take the levers, whatever
+        the last commanded position was stays -- and after takeoff that is full
+        power, which turns the descent into an overspeed.
+        """
+        target = max(0.0, min(100.0, percent))
+        if self._throttle is not None and abs(target - self._throttle) < 1.5:
+            return
+        self._throttle = target
+        self._toga = False
+        self.sim.send_event("THROTTLE_SET", int(round(target / 100.0 * 16383)))
 
     # -- Approach ------------------------------------------------------------
     def tune_nav1(self, frequency_mhz: float, course_true_deg: Optional[float],
@@ -276,6 +295,14 @@ class AircraftAdapter:
 
     def deploy_spoilers(self) -> None:
         self.sim.send_event("SPOILERS_ON")
+
+    def set_speedbrake_percent(self, percent: float) -> None:
+        """Partial speedbrake, for shedding speed without fully deploying."""
+        target = max(0.0, min(100.0, percent))
+        if self._speedbrake is not None and abs(target - self._speedbrake) < 8.0:
+            return
+        self._speedbrake = target
+        self.sim.send_event("SPOILERS_SET", int(round(target / 100.0 * 16383)))
 
     def retract_spoilers(self) -> None:
         self.sim.send_event("SPOILERS_OFF")

@@ -156,6 +156,23 @@ def climb_speed_target(altitude_ft: float, profile: AircraftProfile,
     return (profile.climb_mach, True)
 
 
+def cruise_speed_target(altitude_ft: float, profile: AircraftProfile,
+                        transition_altitude_ft: float = 10000.0):
+    """Cruise speed target. Returns ``(value, is_mach)``.
+
+    Cruise is not automatically a Mach number. On a short sector the cruise
+    level can be three thousand feet, where the type's cruise Mach works out at
+    something like five hundred and sixty knots indicated -- comfortably beyond
+    Vmo, and beyond anything the airframe would survive. Commanding it produced
+    exactly the low-level overspeed it sounds like it would.
+    """
+    if altitude_ft < transition_altitude_ft:
+        return (profile.speed_below_10k_kt, False)
+    if altitude_ft < profile.climb_crossover_ft:
+        return (profile.climb_speed_kt, False)
+    return (profile.cruise_mach, True)
+
+
 def descent_speed_target(altitude_ft: float, profile: AircraftProfile,
                          transition_altitude_ft: float = 10000.0) -> tuple[float, bool]:
     """Descent speed target. Returns ``(value, is_mach)``."""

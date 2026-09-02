@@ -70,7 +70,13 @@ class MockSim(SimBackend):
         wind_from_deg: float = 0.0,
         wind_kt: float = 0.0,
         start_airborne_at_ft: Optional[float] = None,
+        autothrottle_effective: bool = True,
     ) -> None:
+        #: Whether arming the autothrottle actually makes it fly the speed.
+        #: Set False to reproduce the aeroplane that reports an armed
+        #: autothrottle and then leaves the thrust levers exactly where they
+        #: were, which is what turns a descent into a four-hundred-knot dive.
+        self.autothrottle_effective = autothrottle_effective
         self.model = model or MockAircraftModel()
         self._terrain = terrain or (lambda _pos: field_elevation_ft)
         self.state = SimState(
@@ -192,8 +198,17 @@ class MockSim(SimBackend):
         elif e == "AP_MACH_VAR_SET":
             self.target_mach = float(value) / 100.0
             self.speed_is_mach = True
-        elif e in ("AUTO_THROTTLE_ARM", "AUTO_THROTTLE_TO_GA"):
+        elif e == "AUTO_THROTTLE_ARM":
+            # Arming the autothrottle does not move the thrust levers. An
+            # earlier version set them to full here, which meant the mock
+            # aeroplane accelerated and took off the moment the AI Pilot armed
+            # the autothrottle at the gate -- and hid the fact that the real
+            # one was applying takeoff thrust on the apron.
             self.autothrottle = True
+            st.ap_autothrottle = self.autothrottle_effective
+        elif e == "AUTO_THROTTLE_TO_GA":
+            self.autothrottle = True
+            st.ap_autothrottle = self.autothrottle_effective
             self.throttle_pct = 100.0
         elif e == "AP_APR_HOLD_ON" or e == "AP_APR_HOLD":
             st.ap_approach_hold = True
@@ -297,7 +312,7 @@ class MockSim(SimBackend):
         elif st.on_ground and self.landed:
             brake = m.braking_kt_s * (1.6 if st.spoilers_pct > 50 else 1.0)
             st.ias_kt = max(0.0, st.ias_kt - brake * dt)
-        else:
+        elif self.autothrottle and self.autothrottle_effective:
             target = self._target_ias()
             if target > 0:
                 # Climbing eats into available thrust, so acceleration degrades.
@@ -306,6 +321,16 @@ class MockSim(SimBackend):
                 decel = m.decel_kt_s * (1.0 + st.spoilers_pct / 100.0 + st.flaps_pct / 120.0)
                 step = accel * dt if target > st.ias_kt else decel * dt
                 st.ias_kt = approach_value(st.ias_kt, target, step)
+        else:
+            # No working autothrottle: the speed is whatever the thrust levers
+            # and the drag make it, which is the point. Levers left at takeoff
+            # power after departure accelerate the aeroplane until something
+            # else stops it.
+            drag = m.decel_kt_s * (1.0 + st.spoilers_pct / 100.0
+                                   + st.flaps_pct / 60.0
+                                   + max(0.0, st.vertical_speed_fpm) / 1500.0)
+            thrust = m.accel_kt_s * (self.throttle_pct / 60.0)
+            st.ias_kt = max(0.0, st.ias_kt + (thrust - drag) * dt)
         st.tas_kt = cas_to_tas(st.ias_kt, max(st.altitude_ft, 0.0))
 
     def _max_climb_fpm(self) -> float:

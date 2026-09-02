@@ -22,7 +22,12 @@ from typing import Optional
 
 from ..perf.profiles import AircraftProfile
 from ..route.plan import FlightPlan, RouteLeg
-from ..route.profile import VerticalProfile, climb_speed_target, descent_speed_target
+from ..route.profile import (
+    VerticalProfile,
+    climb_speed_target,
+    cruise_speed_target,
+    descent_speed_target,
+)
 from .phases import Phase
 
 #: Height above the field to level off at if the approach is not yet stable.
@@ -92,11 +97,12 @@ class VerticalGuidance:
             )
 
         if phase is Phase.CRUISE:
+            speed, is_mach = cruise_speed_target(altitude_ft, self.profile)
             return VerticalCommand(
                 altitude_ft=self.plan.cruise_altitude_ft,
                 vertical_speed_fpm=None,
-                speed=self.profile.cruise_mach,
-                speed_is_mach=True,
+                speed=speed,
+                speed_is_mach=is_mach,
                 reason="cruise",
             )
 

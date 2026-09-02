@@ -29,11 +29,20 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from ..aircraft.base import AircraftAdapter
-from ..geo import LatLon, distance_nm
+from ..geo import (
+    LatLon,
+    along_track_nm,
+    cross_track_nm,
+    destination_point,
+    distance_nm,
+    signed_diff_deg,
+)
 from ..perf.profiles import AircraftProfile
 from ..route.plan import FlightPlan
+from ..route.planner import rebuild_departure
 from ..route.profile import build_vertical_profile
 from ..sim.base import SimBackend, SimState
+from ..units import mach_to_tas, tas_to_cas
 from .lateral import LateralGuidance
 from .phases import EventLog, FlightEvent, Phase, phase_rank
 from .vertical import VerticalGuidance, should_start_descent
@@ -80,9 +89,33 @@ HANDOVER_WARNING_AGL_FT = 1000.0
 MISSED_APPROACH_HEIGHT_FT = 3000.0
 
 #: Height at which the flare begins on a landing the AI Pilot is flying itself.
-#: Chosen so the exponential law below hands over at roughly the rate the
-#: approach was already being flown at, which makes the transition invisible.
+#: A floor, not a fixed value -- see :meth:`AIPilot._flare_height`.
 FLARE_AGL_FT = 80.0
+
+#: Seconds of flare wanted before the wheels arrive.
+FLARE_LEAD_S = 5.0
+
+#: Minimum height above the terrain the vertical channel will command, as a
+#: function of how far there still is to run. There is no terrain lookahead
+#: available through SimConnect -- only the elevation directly underneath --
+#: so this cannot see a mountain coming. What it can do is refuse to keep
+#: descending into ground that is rising under the aeroplane, which is the
+#: situation that actually kills a flight into somewhere like Burbank.
+TERRAIN_FLOOR_FAR_FT = 1500.0
+TERRAIN_FLOOR_NEAR_FT = 500.0
+TERRAIN_FLOOR_FAR_NM = 15.0
+TERRAIN_FLOOR_NEAR_NM = 5.0
+
+#: Below this height, descending at more than this rate, outside the landing
+#: phase, is a recovery rather than a correction.
+PULL_UP_AGL_FT = 400.0
+PULL_UP_VS_FPM = -1000.0
+
+#: How far above the commanded speed counts as an overspeed worth acting on.
+OVERSPEED_MARGIN_KT = 15.0
+
+#: How fast the thrust levers may move, as a percentage of travel per second.
+LEVER_RATE_PERCENT_PER_S = 12.0
 
 #: Flare time constant, in seconds. The flare law is the standard exponential
 #: one -- descend at height divided by tau -- which is what makes a landing
@@ -90,6 +123,10 @@ FLARE_AGL_FT = 80.0
 #: arriving at whatever fixed rate it was told to hold. Eight seconds gives
 #: about 600 fpm at eighty feet and 75 fpm at ten.
 FLARE_TAU_S = 8.0
+
+#: Rate commanded once past the threshold, to settle the aeroplane on rather
+#: than float it down the runway.
+TOUCHDOWN_VS_FPM = -180.0
 
 #: Bounds on the commanded flare rate.
 FLARE_MIN_VS_FPM = -60.0
@@ -121,6 +158,13 @@ class PilotOptions:
     max_go_arounds: int = 1
     #: Start already airborne (the aeroplane is in the air when you engage).
     start_airborne: bool = False
+    #: Refuse to open the thrust levers until the aeroplane is on a runway.
+    require_runway: bool = True
+    #: Fly the thrust levers directly when the autothrottle is not holding the
+    #: commanded speed, and protect against overspeed.
+    manage_thrust: bool = True
+    #: Refuse to descend below a minimum height above the terrain underneath.
+    terrain_protection: bool = True
 
 
 @dataclass
@@ -205,6 +249,14 @@ class AIPilot:
         self.elapsed_s = 0.0
         self._go_arounds = 0
         self._ap_disconnects = 0
+        self._runway_wait_reported: Optional[float] = None
+        self._runway_check_warned = False
+        self._overspeed = False
+        self._speedbrake_out = False
+        self._lever_percent = 60.0
+        self._autothrottle_working: Optional[bool] = None
+        self._terrain_limited = False
+        self._last_dt = 1.0
         self._ap_ever_engaged = False
         self._autoland_active = False
         self._handed_over = False
@@ -251,6 +303,7 @@ class AIPilot:
         """One control cycle. Call at a few hertz."""
         state = self.sim.poll(dt)
         self.elapsed_s += dt
+        self._last_dt = max(0.05, dt)
         if not self.engaged:
             self._fill_status(state, None, None)
             return self.status
@@ -272,12 +325,14 @@ class AIPilot:
             lateral_command = self._fly_lateral(state)
             vertical_command = self._fly_vertical(state, distance_to_go)
             if self.phase is Phase.LANDING:
-                self._fly_flare(state)
+                self._fly_flare(state, distance_to_go)
         elif self.phase is Phase.TAKEOFF:
             self._fly_takeoff(state)
         elif self.phase is Phase.ROLLOUT:
             self._fly_rollout(state)
 
+        if self.options.manage_thrust and vertical_command is not None:
+            self._manage_thrust(state, vertical_command)
         if self.options.manage_configuration:
             self._manage_configuration(state, distance_to_go)
         if self.options.manage_lights:
@@ -302,7 +357,13 @@ class AIPilot:
 
         if phase is Phase.PREFLIGHT:
             self._do_preflight(state)
-            self._enter_phase(Phase.TAKEOFF, "cleared for takeoff")
+            if not state.on_ground:
+                self._enter_phase(Phase.CLIMB, "already airborne")
+                self._establish_airborne(state)
+                return
+            if not self._ready_for_takeoff(state):
+                return
+            self._enter_phase(Phase.TAKEOFF, "lined up, cleared for takeoff")
             return
 
         if phase is Phase.TAKEOFF:
@@ -368,9 +429,7 @@ class AIPilot:
             return
         self._preflight_done = True
         runway = self.plan.departure_runway
-        self.adapter.set_parking_brake(False, state)
         self._command_flaps(self.profile.takeoff_flaps_index, state)
-        self.adapter.set_autothrottle(True)
         self.adapter.set_altitude(self.plan.cruise_altitude_ft)
         self.adapter.set_speed_kt(self.profile.v2_kt)
         if runway is not None:
@@ -470,6 +529,8 @@ class AIPilot:
 
     def _fly_takeoff(self, state: SimState) -> None:
         runway = self.plan.departure_runway
+        self.adapter.set_parking_brake(False, state)
+        self.adapter.set_autothrottle(True)
         self.adapter.takeoff_thrust()
         self.adapter.set_flaps(self._commanded_flaps, state)
         if runway is not None:
@@ -506,6 +567,7 @@ class AIPilot:
             self.phase, state.altitude_ft, max(0.0, distance_to_go),
             state.ground_speed_kt, self.lateral.active_index, state.altitude_agl_ft,
         )
+        command = self._apply_terrain_floor(command, state, max(0.0, distance_to_go))
         if self.phase is Phase.LANDING and not self._autoland_active \
                 and not self._handed_over:
             # _fly_flare owns altitude and rate from here down; issuing an
@@ -528,14 +590,20 @@ class AIPilot:
         return command
 
     def _command_speed(self, command) -> None:
+        """Send the commanded speed, clamped to the envelope.
+
+        A last line of defence rather than the main one. Nothing upstream
+        should ever ask for more than Vmo, but a speed target is the one thing
+        here that can break an aeroplane, and the cost of checking is nothing.
+        """
         if command.speed <= 0:
             return
         if command.speed_is_mach:
-            self.adapter.set_mach(command.speed)
+            self.adapter.set_mach(min(command.speed, self.profile.max_mach - 0.01))
         else:
-            self.adapter.set_speed_kt(command.speed)
+            self.adapter.set_speed_kt(min(command.speed, self.profile.vmo_kt - 10.0))
 
-    def _fly_flare(self, state: SimState) -> None:
+    def _fly_flare(self, state: SimState, distance_to_go_nm: float = 1.0) -> None:
         """The last hundred feet of a landing the AI Pilot is flying itself.
 
         On an ILS autoland the aeroplane's own logic does this and we stay out
@@ -551,17 +619,24 @@ class AIPilot:
         runway = self.plan.arrival_runway
         field_elev = runway.elevation_ft if runway else self.plan.destination.elevation_ft
 
-        # Put the altitude selector below the runway. An autopilot will level
+        # Put the altitude selector below the ground. An autopilot will level
         # off at whatever is selected, and on short final that is the one thing
         # it must never do -- the aeroplane would fly down the runway fifty feet
         # up until it ran out of fuel. Selecting a height below the surface
         # leaves vertical speed in sole command all the way to touchdown.
-        self.adapter.set_altitude(field_elev - 500.0)
+        #
+        # The reference is the terrain the simulator reports underneath, not
+        # the field elevation from the navigation data. Where the two disagree
+        # -- different scenery, an airport the data has at the wrong height --
+        # the nav data figure can be above the real ground, and the aeroplane
+        # levels off short of the runway and hovers.
+        surface = min(field_elev, state.ground_elevation_ft or field_elev)
+        self.adapter.set_altitude(surface - 500.0)
 
         if state.altitude_agl_ft <= RETARD_AGL_FT:
             self.adapter.idle_thrust()
 
-        if state.altitude_agl_ft > FLARE_AGL_FT:
+        if state.altitude_agl_ft > self._flare_height(state):
             # Hold the glidepath: the rate that arrives at the threshold at
             # fifty feet, bounded so a path correction never becomes a dive.
             target = -state.ground_speed_kt * 5.3 * (self.profile.descent_angle_deg / 3.0)
@@ -581,9 +656,27 @@ class AIPilot:
         # the wheels arrive, and the autopilot's own rate limit means a step
         # command is never fully achieved before touchdown anyway.
         commanded = -state.altitude_agl_ft * 60.0 / FLARE_TAU_S
+        if distance_to_go_nm <= 0.0:
+            # Past the threshold. The flare has done its job and the aeroplane
+            # should now be on the runway, so it is planted rather than floated
+            # -- an exponential flare over ground that keeps falling away will
+            # hold an aeroplane a few feet up indefinitely.
+            commanded = min(commanded, TOUCHDOWN_VS_FPM)
         commanded = max(FLARE_MAX_VS_FPM, min(FLARE_MIN_VS_FPM, commanded))
         self.adapter.clear_vertical_speed()
         self.adapter.set_vertical_speed(commanded)
+
+    def _flare_height(self, state: SimState) -> float:
+        """Where to start rounding out, given the rate and the control interval.
+
+        A fixed height assumes the loop runs often enough to act on it. At a
+        coarse control rate the aeroplane can fall through the whole flare
+        window between two cycles and arrive at the approach rate, so the
+        height is derived from how long the flare needs instead.
+        """
+        descent_ft_per_s = max(0.0, -state.vertical_speed_fpm) / 60.0
+        needed = descent_ft_per_s * (FLARE_LEAD_S + 2.0 * self._last_dt)
+        return max(FLARE_AGL_FT, needed)
 
     def _fly_rollout(self, state: SimState) -> None:
         self.adapter.idle_thrust()
@@ -592,6 +685,240 @@ class AIPilot:
             self.adapter.disengage_autopilot(state)
         if state.ground_speed_kt > 30.0:
             self.adapter.apply_brakes()
+
+    # -- Thrust, and not letting the speed run away --------------------------
+    def _target_speed_kt(self, command, altitude_ft: float) -> float:
+        """The commanded speed as an indicated airspeed, whatever it was set in.
+
+        The altitude comes from the live state, not from the status snapshot:
+        the snapshot is filled at the end of the cycle, so on the first pass it
+        still reads zero -- and Mach 0.80 converted at sea level is 529 knots,
+        which the thrust controller then dutifully chases.
+        """
+        if not command.speed_is_mach:
+            return command.speed
+        altitude = max(altitude_ft, 0.0)
+        return tas_to_cas(mach_to_tas(command.speed, altitude), altitude)
+
+    def _manage_thrust(self, state: SimState, command) -> None:
+        """Keep the speed under control, whether or not the autothrottle helps.
+
+        An armed autothrottle is not the same as an autothrottle that is flying
+        the aeroplane, and on some aircraft it quietly does not take the levers
+        at all. Whatever position they were last commanded to then stays --
+        and after takeoff that is full power. The aeroplane holds its vertical
+        speed by pitching, the thrust never comes back, and it arrives in the
+        descent at four hundred and fifty knots.
+
+        So the speed is checked against what was asked for. If the autothrottle
+        is doing its job, nothing happens here. If it is not, the levers are
+        flown directly.
+        """
+        if self.phase in (Phase.PREFLIGHT, Phase.TAKEOFF, Phase.ROLLOUT,
+                          Phase.COMPLETE):
+            return
+        target = self._target_speed_kt(command, state.altitude_ft)
+        if target <= 0:
+            return
+        excess = state.ias_kt - target
+        limit = min(self.profile.vmo_kt, target + OVERSPEED_MARGIN_KT)
+
+        if state.ias_kt > self.profile.vmo_kt:
+            if not self._overspeed:
+                self._overspeed = True
+                self._event(
+                    f"Overspeed: {state.ias_kt:.0f} kt against a limit of "
+                    f"{self.profile.vmo_kt:.0f}. Closing the thrust levers and "
+                    "using the speedbrake.", "warning")
+            self._lever_percent = 0.0
+            self.adapter.set_throttle_percent(0.0)
+            self.adapter.set_speedbrake_percent(100.0)
+            return
+        if self._overspeed and state.ias_kt < target + 5.0:
+            self._overspeed = False
+            self.adapter.set_speedbrake_percent(0.0)
+            self._event("Back within limits.")
+
+        if state.ap_autothrottle and abs(excess) < OVERSPEED_MARGIN_KT:
+            self._autothrottle_working = True
+            return                     # the aeroplane is flying it; leave it be
+
+        if abs(excess) < 6.0:
+            return
+        if self._autothrottle_working is None and state.ap_autothrottle:
+            self._autothrottle_working = False
+            self._event(
+                "The autothrottle is armed but not holding the speed, so the "
+                "thrust levers are being flown directly instead.", "warning")
+
+        # A proportional lever position around a per-phase trim setting.
+        base = {Phase.CLIMB: 88.0, Phase.CRUISE: 68.0, Phase.DESCENT: 22.0,
+                Phase.APPROACH: 40.0, Phase.LANDING: 35.0}.get(self.phase, 55.0)
+        self._move_levers(base - excess * 3.0)
+        if excess > OVERSPEED_MARGIN_KT and self.phase in (Phase.DESCENT,
+                                                           Phase.APPROACH):
+            self.adapter.set_speedbrake_percent(min(100.0, excess * 4.0))
+        elif excess < 0 and self._speedbrake_out:
+            self.adapter.set_speedbrake_percent(0.0)
+        self._speedbrake_out = excess > OVERSPEED_MARGIN_KT
+
+    def _move_levers(self, wanted_percent: float) -> None:
+        """Move the thrust levers towards a position, at a believable rate.
+
+        Commanding the position outright makes the levers slam between idle and
+        full as the speed crosses the target, which no autothrottle does and no
+        engine would enjoy. Real thrust levers take a few seconds end to end.
+        """
+        wanted = max(0.0, min(100.0, wanted_percent))
+        current = self._lever_percent
+        step = LEVER_RATE_PERCENT_PER_S * self._last_dt
+        if abs(wanted - current) <= step:
+            self._lever_percent = wanted
+        else:
+            self._lever_percent = current + (step if wanted > current else -step)
+        self.adapter.set_throttle_percent(self._lever_percent)
+
+    # -- Terrain -------------------------------------------------------------
+    def _terrain_floor_agl_ft(self, distance_to_go_nm: float) -> float:
+        """Minimum height above the ground underneath, by distance to run."""
+        if distance_to_go_nm >= TERRAIN_FLOOR_FAR_NM:
+            return TERRAIN_FLOOR_FAR_FT
+        if distance_to_go_nm <= TERRAIN_FLOOR_NEAR_NM:
+            return 0.0            # on final: the glidepath is the floor
+        span = TERRAIN_FLOOR_FAR_NM - TERRAIN_FLOOR_NEAR_NM
+        fraction = (distance_to_go_nm - TERRAIN_FLOOR_NEAR_NM) / span
+        return TERRAIN_FLOOR_NEAR_FT + fraction * (TERRAIN_FLOOR_FAR_FT
+                                                   - TERRAIN_FLOOR_NEAR_FT)
+
+    def _apply_terrain_floor(self, command, state: SimState,
+                             distance_to_go_nm: float):
+        """Refuse to fly the descent path into the ground.
+
+        SimConnect reports the terrain elevation under the aeroplane but has no
+        way to ask about terrain ahead, so this cannot see a ridge coming. What
+        it does do is notice the ground rising underneath and stop descending
+        into it, which is the case that turns a short sector into somewhere
+        like Burbank into a hillside.
+        """
+        if not self.options.terrain_protection:
+            return command
+        if self.phase in (Phase.PREFLIGHT, Phase.TAKEOFF, Phase.ROLLOUT,
+                          Phase.COMPLETE):
+            return command
+        if self._autoland_active or self._handed_over:
+            return command
+
+        floor_agl = self._terrain_floor_agl_ft(distance_to_go_nm)
+        if floor_agl <= 0.0:
+            return command
+        floor_alt = state.ground_elevation_ft + floor_agl
+
+        # The floor may only ever arrest a descent. An earlier version applied
+        # it to whatever the vertical channel had asked for, which turned a
+        # climb through the floor into a climb *to* the floor: the aeroplane
+        # levelled at fifteen hundred feet on departure and flew the entire
+        # sector there, because the commanded rate shrank to nothing as it
+        # approached the very height it was trying to climb away from.
+        emergency = (state.altitude_agl_ft < PULL_UP_AGL_FT
+                     and state.vertical_speed_fpm < PULL_UP_VS_FPM
+                     and self.phase is not Phase.LANDING)
+        descending = (command.vertical_speed_fpm is not None
+                      and command.vertical_speed_fpm < 0.0)
+        aiming_below = command.altitude_ft < floor_alt
+        already_low = state.altitude_ft <= floor_alt
+        if not emergency and not aiming_below and not (descending and already_low):
+            self._terrain_limited = False
+            return command
+
+        from dataclasses import replace as _replace
+
+        if not self._terrain_limited:
+            self._terrain_limited = True
+            self._event(
+                f"Terrain: only {state.altitude_agl_ft:.0f} ft above the ground "
+                f"with {distance_to_go_nm:.0f} nm to run. Levelling off at "
+                f"{floor_alt:.0f} ft rather than continuing down.", "warning")
+        climb = 1200.0 if emergency else max(0.0, (floor_alt - state.altitude_ft) * 2.0)
+        return _replace(command, altitude_ft=max(command.altitude_ft, floor_alt),
+                        vertical_speed_fpm=min(1800.0, climb),
+                        reason="held off by terrain")
+
+    # -- Not taking off from the apron ---------------------------------------
+    def _runway_under_aircraft(self, state: SimState) -> Optional[object]:
+        """The departure runway the aeroplane is actually lined up on, if any."""
+        for runway in self.plan.origin.runways:
+            length_nm = runway.length_ft / 6076.11548556
+            if length_nm < 0.05:
+                continue
+            far_end = destination_point(runway.threshold,
+                                        runway.heading_true_deg, length_nm)
+            along = along_track_nm(state.position, runway.threshold, far_end)
+            if not -0.15 <= along <= length_nm + 0.05:
+                continue
+            # Half the runway width plus a margin: enough to be lined up
+            # slightly off centre, not enough to be on a parallel taxiway.
+            tolerance = (runway.width_ft / 2.0 + 120.0) / 6076.11548556
+            if abs(cross_track_nm(state.position, runway.threshold, far_end)) > tolerance:
+                continue
+            if abs(signed_diff_deg(state.heading_true_deg,
+                                   runway.heading_true_deg)) > 30.0:
+                continue
+            return runway
+        return None
+
+    def _ready_for_takeoff(self, state: SimState) -> bool:
+        """Whether it is safe to open the thrust levers.
+
+        The AI Pilot does not taxi, and an earlier version simply assumed the
+        aeroplane was lined up. Run from a gate, it applied takeoff thrust on
+        the apron and drove into a terminal building. So: check, and wait.
+        """
+        if not self.options.require_runway:
+            return True
+        if not self.plan.origin.runways:
+            if not self._runway_check_warned:
+                self._runway_check_warned = True
+                self._event(
+                    f"No runway data for {self.plan.origin.icao}, so there is no "
+                    "way to check the aeroplane is on one. Make sure it is lined "
+                    "up before this rolls.", "warning")
+            return True
+
+        runway = self._runway_under_aircraft(state)
+        if runway is not None:
+            if self.plan.departure_runway is None or \
+                    runway.ident != self.plan.departure_runway.ident:
+                rebuild_departure(self.plan, runway, self.profile)
+                self.lateral = LateralGuidance(self.plan, self.profile.max_bank_deg)
+                self._event(f"Lined up on {runway.ident} rather than the planned "
+                            f"runway -- using {runway.ident}.")
+            return True
+
+        self._report_waiting_for_runway(state)
+        return False
+
+    def _report_waiting_for_runway(self, state: SimState) -> None:
+        """Say, once and then occasionally, that it is waiting to be lined up."""
+        now = self.elapsed_s
+        if self._runway_wait_reported and now - self._runway_wait_reported < 30.0:
+            return
+        first = self._runway_wait_reported is None
+        self._runway_wait_reported = now
+
+        nearest, distance = None, float("inf")
+        for runway in self.plan.origin.runways:
+            d = distance_nm(state.position, runway.threshold)
+            if d < distance:
+                nearest, distance = runway, d
+        where = (f" Nearest runway is {nearest.ident}, {distance:.1f} nm away."
+                 if nearest is not None else "")
+        if first:
+            self._event(
+                "Waiting: the aeroplane is not lined up on a runway, and the AI "
+                "Pilot does not taxi. Taxi out and line up, and it will take "
+                "over by itself as soon as you do." + where, "warning")
+        else:
+            self._event(f"Still waiting to be lined up on a runway.{where}")
 
     # -- Keeping hold of the autopilot ---------------------------------------
     @property
