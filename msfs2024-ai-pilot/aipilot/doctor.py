@@ -72,7 +72,16 @@ def _check_navdata(args) -> int:
 
     print(f"{TICK} Sources, in the order they are consulted: {navdata.describe()}")
     problems = 0
-    sample = navdata.airport("EGLL") or navdata.airport("KJFK")
+    wanted = (getattr(args, "airport", None) or "").strip().upper()
+    if wanted:
+        sample = navdata.airport(wanted)
+        if sample is None:
+            print(f"{FAIL} {wanted} is not in the navigation data "
+                  f"({navdata.describe()}).")
+            navdata.close()
+            return 1
+    else:
+        sample = navdata.airport("EGLL") or navdata.airport("KJFK")
     if sample is None:
         print(f"{FAIL} Could not look up a major airport. The data may be unreadable.")
         return 1
@@ -98,8 +107,50 @@ def _check_navdata(args) -> int:
               "approach path and land on that, rather than on the aeroplane's ILS "
               "receiver. It still lands; it is just less precise.")
         problems += 1
+
+    problems += _check_ground(navdata, sample)
     navdata.close()
     return problems
+
+
+def _check_ground(navdata, airport) -> int:
+    """Say whether this airport can be pushed back from and taxied at.
+
+    Worth its own check, because taxiway data comes from exactly one place
+    and it is not the one people assume. OurAirports publishes airports,
+    runways, navaids and frequencies -- it does not publish taxiways, and
+    there is no taxiway CSV to download. The only source is Little Navmap's
+    scenery database, which is built by scanning the scenery the simulator
+    has installed, custom airports included.
+    """
+    from .navdata.resolve import search_dirs
+
+    layout = navdata.ground_layout(airport.icao)
+    if layout is not None and layout.usable:
+        stands = len(layout.parking)
+        print(f"{TICK} Taxiway data for {airport.icao}: "
+              f"{len(layout.taxi_paths)} segments, {stands} stand(s). It will "
+              "push back and taxi by itself here.")
+        if not stands:
+            print(f"{WARN} No stands at {airport.icao}, so it will taxi out but "
+                  "hold clear of the runway after landing rather than parking.")
+            return 1
+        return 0
+
+    print(f"{WARN} No taxiway data for {airport.icao}. It will not push back or "
+          "taxi: put the aeroplane on the runway yourself, and it flies from "
+          "there.")
+    print("       Taxiways come only from Little Navmap's scenery database. "
+          "There is no taxiway CSV -- OurAirports does not publish one, so "
+          "adding files will not help with this.")
+    print("       Install Little Navmap, let it scan your scenery once, and "
+          "this program finds the database on its own.")
+    print("       OurAirports CSVs (airports.csv, runways.csv) are looked for "
+          "in:")
+    for directory in search_dirs():
+        print(f"         {directory}")
+    print("       They give runways and ILS, never taxiways.")
+    return 1
 
 
 def _check_simconnect() -> int:

@@ -13,6 +13,35 @@ cabin signs set correctly at each stage.
 [04:52] TAKEOFF    lined up, cleared for takeoff
 ```
 
+## What it needs, and where that comes from
+
+One source, and it is not the one people reach for first:
+
+| | Little Navmap | OurAirports CSVs | Bundled sample |
+|---|---|---|---|
+| Airports | yes | yes | yes |
+| Runways and ILS | yes | runways only | no |
+| **Taxiways and stands** | **yes** | **no** | **no** |
+
+There is no taxiway CSV. OurAirports publishes airports, runways, navaids and
+frequencies, and nothing about the surface of an airport. Downloading more
+files, or putting them somewhere else, will not produce a pushback -- the data
+simply is not in them.
+
+Little Navmap builds its database by scanning the scenery your simulator has
+installed, so it knows about airports Asobo never shipped as well as the ones
+it did. Install it, let it scan once, and this program finds the database by
+itself.
+
+To check a particular airport rather than guessing:
+
+```bash
+python -m aipilot doctor --airport KJFK
+```
+
+which reports the taxiway segments and stands it can see there, or says what is
+missing and where it looked.
+
 ## Your scenery, not a guess
 
 **It reads Little Navmap's database, which Little Navmap compiles from the
@@ -83,11 +112,34 @@ Needed for two reasons, and it checks for both:
 The push is straight back, turning onto the heading of the first leg it then
 has to taxi, and stops once clear.
 
-**This part is best effort.** The simulator's tug is driven by two events whose
-behaviour varies between aircraft, so it is deliberately simple and it says what
-it is doing at each step, so a wrong turn is obvious rather than mysterious. If
-your aeroplane does not respond, push back by hand — the AI Pilot will pick up
-the taxi as soon as you stop.
+### Letting the tug go
+
+Worth spelling out, because getting it wrong looks exactly like a hang.
+
+`KEY_TUG_HEADING` does not merely steer a pushback that is already running.
+In the simulator it is how a pushback is *started*: send it and a tug appears.
+So anything that keeps sending a tug heading after asking the tug to
+disconnect gets the tug straight back, as fast as it is released. The
+aeroplane then sits on the stand with its nosewheel swinging, thrust doing
+nothing, and no message to say why — which is precisely what was reported from
+a gate at Kennedy.
+
+The pushback therefore stops commanding the tug the moment the push is
+finished, asks it to leave on a cooldown rather than every cycle (the event is
+a toggle, and the state that says whether it worked arrives about as often as
+the control loop runs, so asking every cycle toggles it back on as often as
+off), and waits for the simulator to confirm. If it never confirms — some
+aircraft never clear `PUSHBACK ATTACHED` — it says so after twenty seconds and
+taxis anyway rather than sitting there for ever.
+
+**This part is still best effort.** The tug events vary between aircraft, so it
+is deliberately simple and says what it is doing at each step, so a wrong turn
+is obvious rather than mysterious. If your aeroplane does not respond, push
+back by hand — the AI Pilot picks up the taxi as soon as you stop.
+
+If there is no route off the stand at all — the taxiway data does not reach it —
+it stops, says so, and waits to be taxied out. It does not enter the taxi phase
+with nothing to follow, which is a state it could never leave.
 
 ## Lights and cabin signs
 

@@ -327,3 +327,120 @@ def test_a_switch_the_pilot_moves_by_hand_is_not_fought(network):
         pilot.update(1.0)
     after = len([e for e, _ in sim.events_sent if "LIGHT" in e or "STROBE" in e])
     assert after - before <= 4, "kept re-commanding switches already correct"
+
+
+# --- Letting the tug go ------------------------------------------------------
+# Reported from a real flight: at a JFK gate the 787 pushed back a short way,
+# then stood still with its nosewheel swinging left and right and never taxied.
+#
+# The cause was that KEY_TUG_HEADING does not merely steer a pushback that is
+# already running -- in the simulator it is how a pushback is *started*. The
+# controller kept sending the tug a heading every cycle, including after asking
+# it to disconnect, so the tug was re-attached as fast as it was released. The
+# aeroplane was held on the stand by a tug it could not shake off, with thrust
+# doing nothing and the nosewheel following the tug commands: exactly what was
+# seen.
+#
+# It could not be reproduced here, because the mock let a tug heading through
+# without attaching a tug. It does now, which is what makes these tests mean
+# something.
+#: Nose-in on the stand, facing the terminal, the way an aeroplane is actually
+#: parked at a gate: the taxiway is directly behind it, so it cannot drive out
+#: and has to be pushed back and turned. This is the case that failed at JFK.
+NOSE_IN_HEADING = 180.0
+
+
+def _push_and_taxi(network, options=None):
+    return _fly(STAND, NOSE_IN_HEADING, options=options, network=network)
+
+
+def test_a_pushback_ends_and_the_aeroplane_taxis_away(network):
+    pilot, sim = _push_and_taxi(network)
+    assert any("pushing back" in e.message.lower() for e in pilot.log), \
+        "this stand should have needed a pushback"
+    assert pilot.phase in (Phase.TAKEOFF, Phase.CLIMB), \
+        f"stuck in {pilot.phase.value} -- it never got off the stand"
+    assert not sim.state.pushback_attached, "the tug was never let go"
+
+
+def test_the_tug_is_not_summoned_back_after_being_released(network):
+    """The specific failure: released, then immediately re-attached."""
+    profile = get_profile("b787-10")
+    plan = plan_route(DEPARTURE, ARRIVAL, profile, None, departure_runway="09")
+    sim = MockSim(STAND, NOSE_IN_HEADING, DEPARTURE.elevation_ft,
+                  model=MockAircraftModel(max_climb_fpm=profile.max_climb_rate_fpm))
+    adapter, _ = build_adapter("b787-10", sim)
+    pilot = AIPilot(sim, adapter, profile, plan, PilotOptions(), ground=network)
+    pilot.engage()
+
+    detached_at = None
+    for step in range(1200):
+        pilot.update(1.0)
+        if detached_at is None and pilot.phase is Phase.TAXI:
+            detached_at = step
+        if detached_at is not None:
+            assert not sim.state.pushback_attached, (
+                "the tug came back after the taxi started, at step "
+                f"{step} (released at {detached_at})")
+        if pilot.phase in (Phase.TAKEOFF, Phase.CLIMB):
+            break
+    assert detached_at is not None, "never reached the taxi"
+
+
+def test_the_aeroplane_actually_moves_after_the_pushback(network):
+    """Standing still with the nosewheel swinging is the thing to catch."""
+    pilot, sim = _push_and_taxi(network)
+    taxi_log = [e.message for e in pilot.log if "taxiing to" in e.message.lower()]
+    assert taxi_log, "it never started a taxi"
+    assert distance_nm(sim.state.position, STAND) > 0.3, \
+        "it barely left the stand"
+
+
+def test_a_tug_that_never_reports_leaving_does_not_strand_the_aeroplane(network):
+    """Some aircraft never clear PUSHBACK ATTACHED. Say so, and carry on."""
+    profile = get_profile("b787-10")
+    plan = plan_route(DEPARTURE, ARRIVAL, profile, None, departure_runway="09")
+    sim = MockSim(STAND, NOSE_IN_HEADING, DEPARTURE.elevation_ft,
+                  model=MockAircraftModel(max_climb_fpm=profile.max_climb_rate_fpm))
+
+    # A simulator that acknowledges nothing: the tug stays attached for ever.
+    original = sim.send_event
+
+    def stubborn(name, value=0):
+        if name == "TOGGLE_PUSHBACK" and sim.state.pushback_attached:
+            return
+        original(name, value)
+
+    sim.send_event = stubborn
+    adapter, _ = build_adapter("b787-10", sim)
+    pilot = AIPilot(sim, adapter, profile, plan, PilotOptions(), ground=network)
+    pilot.engage()
+    for _ in range(600):
+        pilot.update(1.0)
+        if pilot.phase not in (Phase.PREFLIGHT, Phase.PUSHBACK):
+            break
+
+    assert pilot.phase is Phase.TAXI, \
+        f"gave up on the stand in {pilot.phase.value}"
+    assert any("tug attached" in e.message.lower() for e in pilot.log), \
+        "it moved on without saying the tug never disconnected"
+
+
+def test_a_stand_the_taxiways_cannot_reach_says_so_and_stops(network):
+    """A pushback is only ever a couple of hundred yards. If the stand is
+    further than that from any taxiway the data knows about, there is no
+    route, and the only honest answer is to say so and hold.
+
+    Entering the taxi phase with nothing to follow was the wrong answer: it
+    steers nothing and commands nothing, and the phase machine will not run
+    backwards, so the aeroplane stands on the apron for the rest of the day
+    with no explanation."""
+    stranded = destination_point(STAND, RUNWAY_HEADING + 90.0, 0.20)
+    pilot, sim = _fly(stranded, NOSE_IN_HEADING, network=network, seconds=400)
+
+    assert pilot.phase is Phase.PREFLIGHT, \
+        f"ended up stuck in {pilot.phase.value}"
+    assert not sim.state.pushback_attached, "the tug was never let go"
+    messages = " ".join(e.message.lower() for e in pilot.log)
+    assert "could not find a way across the taxiways" in messages
+    assert "taxi out" in messages, "it never said what the pilot should do"

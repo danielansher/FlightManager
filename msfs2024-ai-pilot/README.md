@@ -96,9 +96,14 @@ Full setup, including where to get proper runway and ILS data, is in
 ## On the ground
 
 With taxiway data available it pushes back, taxis to the runway on the real
-taxiways, lines up and goes — lights and cabin signs set correctly throughout.
-Without that data it does not move, says so, and takes over once you have
-taxied out and lined up yourself.
+taxiways, lines up and goes — and on arrival it vacates, taxis in and parks on
+a stand, with lights and cabin signs set correctly throughout. Without that
+data it does not move, says so, and takes over once you have taxied out and
+lined up yourself.
+
+Taxiway data means **Little Navmap**, and only Little Navmap. There is no
+taxiway CSV to download. `python -m aipilot doctor --airport KJFK` tells you
+in as many words whether your own home airport has it.
 
 It reads **your installed scenery**, via Little Navmap, so custom airports are
 your custom airports. It cannot see obstacles — nothing in SimConnect exposes
@@ -192,16 +197,44 @@ aeroplane. [docs/MSFS2020.md](docs/MSFS2020.md) has the details.
 
 ## Navigation data
 
-It uses whatever you already have, in this order:
+Two different files, doing two different jobs. This trips people up, so plainly:
 
-1. **Little Navmap's scenery database** — the best source, because it was built
-   from the scenery the simulator is actually flying over, so its runways and
-   ILS frequencies match. Found automatically if you have it.
+| What you want | What provides it |
+|---|---|
+| Airports and their positions | any of the three below |
+| Runways, thresholds, ILS | Little Navmap **or** OurAirports `runways.csv` |
+| **Taxiways, stands, pushback** | **Little Navmap only** |
+
+**There is no taxiway CSV.** OurAirports publishes airports, runways, navaids and
+frequencies; it does not publish taxiways, and no file you can download will add
+them. Taxiway data comes from exactly one place — Little Navmap's scenery
+database, which it builds by scanning the scenery your simulator has installed,
+your custom airports included. Without it the AI Pilot will not push back or
+taxi: put the aeroplane on the runway yourself and it flies from there.
+
+Sources are consulted in this order:
+
+1. **Little Navmap's scenery database** — the best source, and the only one with
+   taxiways. Built from the scenery the simulator actually flies over, so its
+   runways, ILS frequencies and gates match what you see. Found automatically.
 2. **OurAirports CSVs** — public domain, one download, exact runway thresholds
-   worldwide, but no ILS data.
-3. **A small bundled sample** — enough to fly a demo out of the box. It has no
-   runway data, so approaches are built to *assumed* runways that will not line
-   up with the real ones. It says so, loudly, every time it does this.
+   worldwide. No ILS, no taxiways. Put `airports.csv` and `runways.csv` in the
+   folder you run the program from, or in a `navdata` folder beside it. Next to
+   `SimConnect.dll` is not one of the places it looks unless that happens to be
+   the same folder.
+3. **A small bundled sample** — enough to fly a demo out of the box. No runway
+   data, so approaches are built to *assumed* runways that will not line up with
+   the real ones. It says so, loudly, every time.
+
+To see exactly what you have, for the airport you actually fly from:
+
+```bash
+python -m aipilot doctor --airport KJFK
+```
+
+It names the sources it found, says whether the runways and ILS are real, and
+says in as many words whether that airport can be pushed back from and taxied
+at — and if not, where it looked and what would fix it.
 
 ## Honesty about the limits
 
@@ -227,17 +260,23 @@ It uses whatever you already have, in this order:
 python -m pytest tests/ -q
 ```
 
-The test suite flies complete flights — brakes off to a full stop — against a
-point-mass simulator that speaks the same protocol as SimConnect. Every aircraft
-in the fleet, a twenty-hour long haul, a date-line crossing, a forced go-around,
-and four different control rates.
+219 tests. The suite flies complete flights — brakes off to a full stop — against
+a point-mass simulator that speaks the same protocol as SimConnect. Every
+aircraft in the fleet, a twenty-hour long haul, a date-line crossing, a forced
+go-around, nine real routes out of Kennedy, and four different control rates.
 
-That is not incidental. Every real bug found while building this was a
-whole-flight bug and invisible from inside the component that caused it: a top
-of descent that triggered on the runway at the departure end, an approach phase
-entered three hundred miles out, a lateral channel with nothing ahead of it at
-fifty feet, a go-around that could not climb. The unit tests all passed
-throughout.
+`tests/test_gate_to_gate.py` flies KJFK to KIAD from a nose-in gate to a stand,
+with a taxiway network at both ends: pushback, taxi, takeoff, cruise, descent,
+approach, landing, and taxi in. Every ground failure reported from the simulator
+so far has been in a phase the older tests never entered.
+
+The mock is only worth as much as its fidelity, and three places where it was
+kinder than the simulator have been corrected — each of which was hiding a real
+bug rather than merely being approximate:
+
+- `KEY_TUG_HEADING` now summons the tug, as it does in the simulator.
+- A landed aeroplane can taxi again instead of braking for ever.
+- Wind no longer blows a parked aeroplane across the apron.
 
 ## Layout
 

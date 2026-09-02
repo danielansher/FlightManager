@@ -34,9 +34,24 @@ class NavDataSources:
     msfs_version: Optional[str] = None
 
 
+#: Where a downloaded OurAirports CSV is looked for, in order. The project
+#: root is included as well as the working directory because the launchers
+#: change into it, and because "next to the program" is where people put a
+#: file they have just downloaded for the program.
+def search_dirs(extra_dirs: Sequence[str] = ()) -> list[str]:
+    project_root = os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))))
+    seen: list[str] = []
+    for directory in (list(extra_dirs)
+                      + [os.getcwd(), os.path.join(os.getcwd(), "navdata"),
+                         project_root, os.path.join(project_root, "navdata")]):
+        if directory and directory not in seen:
+            seen.append(directory)
+    return seen
+
+
 def _find(name: str, extra_dirs: Sequence[str]) -> Optional[str]:
-    candidates = list(extra_dirs) + [os.getcwd(), os.path.join(os.getcwd(), "navdata")]
-    for directory in candidates:
+    for directory in search_dirs(extra_dirs):
         path = os.path.join(directory, name)
         if os.path.isfile(path):
             return path

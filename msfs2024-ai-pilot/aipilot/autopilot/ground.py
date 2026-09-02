@@ -271,6 +271,15 @@ class PushbackGuidance:
         if self._travelled >= self.target_distance_nm:
             self._done = True
 
+    @property
+    def done(self) -> bool:
+        """Whether the push is over, without advancing the accumulator.
+
+        ``finished`` has a side effect and must be called exactly once a
+        cycle. Anything else that needs to know reads this.
+        """
+        return self._done
+
     def finished(self, position: LatLon) -> bool:
         self.advance(position)
         return self._done

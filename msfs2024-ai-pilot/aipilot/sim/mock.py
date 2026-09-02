@@ -282,6 +282,17 @@ class MockSim(SimBackend):
             # The heading the aeroplane is to end up facing, scaled across the
             # range of a 32-bit unsigned integer.
             self.tug_heading_deg = (value / 4294967296.0) * 360.0
+            # In the simulator this event *summons* the tug: sending it is how
+            # a pushback is started, not merely how a pushback already running
+            # is steered. Modelling that matters, because it means anything
+            # still sending a tug heading after asking the tug to leave gets
+            # it straight back, and the aeroplane never moves under its own
+            # power again. An earlier version of this mock let the heading
+            # through without attaching, so that deadlock could not be
+            # reproduced here -- only in the real simulator, on a real stand.
+            st.pushback_attached = True
+            if st.pushback_state == 3:
+                st.pushback_state = 0
 
     # -- Integration ---------------------------------------------------------
     def poll(self, dt: float) -> SimState:
@@ -344,6 +355,11 @@ class MockSim(SimBackend):
             return tas_to_cas(mach_to_tas(self.target_mach, alt), alt)
         return self.target_speed_kt
 
+    #: Speed at which the landing rollout is over and the aeroplane is simply
+    #: an aeroplane on the ground again, under its own power. Below the speed
+    #: the controller hands over to the taxi at, so the two do not fight.
+    ROLLOUT_END_KT = 20.0
+
     def _step_speed(self, dt: float) -> None:
         st = self.state
         m = self.model
@@ -364,6 +380,13 @@ class MockSim(SimBackend):
         elif st.on_ground and self.landed:
             brake = m.braking_kt_s * (1.6 if st.spoilers_pct > 50 else 1.0)
             st.ias_kt = max(0.0, st.ias_kt - brake * dt)
+            if st.ias_kt <= self.ROLLOUT_END_KT:
+                # The landing rollout is over. Until this was here the flag
+                # stayed set for good, the automatic braking never stopped and
+                # the throttle was ignored, so an aeroplane that had landed
+                # could never taxi again -- which meant the taxi to the stand
+                # could not be tested at all, only written.
+                self.landed = False
         elif self.autothrottle and self.autothrottle_effective:
             target = self._target_ias()
             if target > 0:
@@ -499,6 +522,26 @@ class MockSim(SimBackend):
             moved = st.ground_speed_kt * (dt / 3600.0)
             new_position = destination_point(st.position, st.track_true_deg, moved)
             st.lat, st.lon = new_position.lat, new_position.lon
+            return
+        if st.on_ground:
+            # On the ground the wheels decide where the aeroplane goes, so it
+            # travels along its heading at its own speed and the wind does not
+            # push it sideways. Running the wind triangle here instead meant a
+            # stationary aeroplane with the brakes on drifted across the apron
+            # at a few knots for ever, which -- among other things -- meant it
+            # could never satisfy "stopped on the stand" and so never finished
+            # a flight on a windy day.
+            # The simplification here is that on the ground the speed being
+            # integrated is treated as speed over the ground rather than
+            # through the air, so a takeoff roll into a headwind is a little
+            # longer than it should be. That is the right way round to be
+            # wrong, and nothing on the ground is measured against it.
+            st.ground_speed_kt = max(0.0, st.ias_kt)
+            st.track_true_deg = st.heading_true_deg
+            moved = st.ground_speed_kt * (dt / 3600.0)
+            if moved > 0:
+                new_pos = destination_point(st.position, st.track_true_deg, moved)
+                st.lat, st.lon = new_pos.lat, new_pos.lon
             return
         # Wind triangle: air vector plus wind vector gives the ground vector.
         hdg = math.radians(st.heading_true_deg)

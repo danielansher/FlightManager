@@ -126,6 +126,14 @@ OVERSPEED_MARGIN_KT = 15.0
 #: Ground speed at which the landing roll is over and the taxi in begins.
 TAXI_IN_HANDOVER_KT = 25.0
 
+#: How often to ask the tug to disconnect, and how long to wait before giving
+#: up on the simulator ever reporting that it has. The interval matters: the
+#: event is a toggle, and the state that says whether it worked arrives at
+#: roughly the rate this loop runs at, so asking every cycle toggles the tug
+#: back on as often as off.
+TUG_RELEASE_INTERVAL_S = 1.5
+TUG_RELEASE_TIMEOUT_S = 20.0
+
 #: Walking pace, for straightening out on the runway.
 LINEUP_SPEED_KT = 5.0
 
@@ -287,6 +295,9 @@ class AIPilot:
         self._runway_wait_reported: Optional[float] = None
         self._runway_check_warned = False
         self._ground_started = False
+        #: When the tug was first asked to leave, and when we last asked.
+        self._tug_release_started: Optional[float] = None
+        self._tug_release_sent = -TUG_RELEASE_INTERVAL_S
         self._overspeed = False
         self._speedbrake_out = False
         self._lever_percent = 60.0
@@ -383,8 +394,10 @@ class AIPilot:
         return self.status
 
     # -- Phase machine -------------------------------------------------------
-    def _enter_phase(self, phase: Phase, reason: str = "") -> None:
-        if phase_rank(phase) < phase_rank(self.phase) and phase is not Phase.APPROACH:
+    def _enter_phase(self, phase: Phase, reason: str = "",
+                     force: bool = False) -> None:
+        if phase_rank(phase) < phase_rank(self.phase) \
+                and phase is not Phase.APPROACH and not force:
             return                      # phases do not run backwards
         if phase is self.phase:
             return
@@ -408,14 +421,7 @@ class AIPilot:
 
         if phase is Phase.PUSHBACK:
             if self.pushback is not None and self.pushback.finished(state.position):
-                self.adapter.set_pushback(False, state)
-                self.adapter.set_wheel_brakes(1.0)
-                if state.ground_speed_kt < 1.0 and not state.pushback_attached:
-                    self.pushback = None
-                    if self._start_taxi(state):
-                        self._enter_phase(Phase.TAXI, "taxiing to the runway")
-                    else:
-                        self._enter_phase(Phase.TAXI, "pushback complete")
+                self._release_tug(state)
             return
 
         if phase is Phase.TAXI:
@@ -899,11 +905,69 @@ class AIPilot:
         return False
 
     def _fly_pushback(self, state: SimState) -> None:
-        if self.pushback is None:
+        if self.pushback is None or self.pushback.done:
+            # Nothing once the push is over. Sending a tug heading is how a
+            # pushback is *started*, not merely how a running one is steered,
+            # so a tug heading sent after asking the tug to leave summons it
+            # straight back. The aeroplane then sits on the stand with its
+            # nosewheel swinging, held by a tug that is re-attached as fast as
+            # it is released, and no amount of thrust will move it.
             return
         # The tug event takes the heading the aeroplane should end up on.
         self.adapter.set_tug_heading(self.pushback.final_heading)
         self.adapter.set_wheel_brakes(0.0)
+
+    def _release_tug(self, state: SimState) -> None:
+        """Stop, let the tug go, and start taxiing.
+
+        The tug is asked to leave on a cooldown rather than every cycle. The
+        event is a toggle and the state that says whether it worked arrives at
+        about the rate this loop runs at, so sending it every cycle toggles the
+        tug back on as often as off.
+        """
+        self.adapter.set_throttle_percent(0.0)
+        self.adapter.set_wheel_brakes(1.0)
+
+        if self._tug_release_started is None:
+            self._tug_release_started = self.elapsed_s
+
+        waited = self.elapsed_s - self._tug_release_started
+        if state.pushback_attached and \
+                self.elapsed_s - self._tug_release_sent >= TUG_RELEASE_INTERVAL_S:
+            self._tug_release_sent = self.elapsed_s
+            self.adapter.set_pushback(False, state)
+
+        stopped = state.ground_speed_kt < 1.0 and not state.pushback_attached
+        if not stopped:
+            if waited < TUG_RELEASE_TIMEOUT_S:
+                self.status.message = "waiting for the tug to disconnect"
+                return
+            # Some aircraft never report the tug leaving. Rather than sit on
+            # the stand for ever, say so and get on with the taxi.
+            self._event(
+                "The simulator still reports a tug attached "
+                f"{TUG_RELEASE_TIMEOUT_S:.0f} seconds after asking it to "
+                "disconnect. Carrying on with the taxi. If the aeroplane does "
+                "not move, press the pushback key yourself to release it.",
+                "warning")
+
+        self.pushback = None
+        self._tug_release_started = None
+        if self._start_taxi(state):
+            self.adapter.set_wheel_brakes(0.0)
+            self._enter_phase(Phase.TAXI, "taxiing to the runway")
+            return
+        # No route off the stand. Going to TAXI here would be a trap: the taxi
+        # phase with nothing to follow steers nothing and commands nothing, so
+        # the aeroplane stands on the apron for ever and the phase machine will
+        # not run backwards to let it recover. Waiting is the honest state --
+        # it is on the ground, going nowhere, and needs the pilot -- and from
+        # there it still takes over by itself the moment it is lined up.
+        self.adapter.set_wheel_brakes(1.0)
+        self.adapter.set_parking_brake(True, state)
+        self._runway_wait_reported = None
+        self._enter_phase(Phase.PREFLIGHT, "pushback complete, waiting",
+                          force=True)
 
     def _fly_taxi(self, state: SimState) -> None:
         """Steer and control speed along the taxi route."""

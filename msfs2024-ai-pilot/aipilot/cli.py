@@ -115,6 +115,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor = subparsers.add_parser(
         "doctor", help="check the simulator connection, the WASM bridge and the nav data")
+    doctor.add_argument("--airport", metavar="ICAO",
+                        help="check one airport in particular: its runways, "
+                             "its ILS, and whether it has the taxiway data "
+                             "needed to push back and taxi")
     doctor.add_argument("--msfs", choices=("2020", "2024"), default=None,
                         help="which simulator to check the navigation data for")
     doctor.add_argument("--navdata", help="path to a Little Navmap sqlite database")
