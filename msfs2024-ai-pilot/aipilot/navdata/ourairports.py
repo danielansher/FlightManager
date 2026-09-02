@@ -57,28 +57,57 @@ class OurAirportsProvider(NavDataProvider):
         return os.path.isfile(self.airports_csv)
 
     def describe(self) -> str:
+        if self._error:
+            return f"ourairports({self._error})"
         detail = "airports+runways" if self.runways_csv else "airports only"
         return f"ourairports({os.path.basename(self.airports_csv)}, {detail})"
 
     def _load(self) -> None:
+        """Read both files, tolerating whatever the user actually has.
+
+        These are files someone downloaded, and quite often re-saved out of a
+        spreadsheet on the way past -- which turns them into Latin-1, or
+        truncates them, or leaves a quote unbalanced. Any of those used to
+        raise out of the first airport lookup and take the flight with it.
+
+        The flag is set at the end, not the beginning: setting it first meant
+        a failed read was cached as a *successful empty* one, so every airport
+        for the rest of the process came back "not in the navigation data".
+        """
         if self._loaded:
             return
-        self._loaded = True
-        with open(self.airports_csv, newline="", encoding="utf-8") as handle:
-            for row in csv.DictReader(handle):
-                # ``ident`` is the ICAO code for virtually every airport that
-                # has one; ``gps_code`` is the fallback for the odd exception.
-                for key in (row.get("ident"), row.get("gps_code")):
-                    if key:
-                        self._airports.setdefault(key.strip().upper(), row)
-        if self.runways_csv and os.path.isfile(self.runways_csv):
-            with open(self.runways_csv, newline="", encoding="utf-8") as handle:
+        try:
+            # utf-8-sig strips the byte order mark a spreadsheet leaves on the
+            # front, which otherwise becomes part of the first column name and
+            # hides the "ident" column entirely.
+            with open(self.airports_csv, newline="", encoding="utf-8-sig",
+                      errors="replace") as handle:
                 for row in csv.DictReader(handle):
-                    if (row.get("closed") or "0").strip() in ("1", "yes"):
-                        continue
-                    ident = (row.get("airport_ident") or "").strip().upper()
-                    if ident:
-                        self._runways.setdefault(ident, []).append(row)
+                    # ``ident`` is the ICAO code for virtually every airport
+                    # that has one; ``gps_code`` is the fallback for the odd
+                    # exception.
+                    for key in (row.get("ident"), row.get("gps_code")):
+                        if key:
+                            self._airports.setdefault(key.strip().upper(), row)
+        except (OSError, UnicodeDecodeError, csv.Error) as exc:
+            self._error = f"{os.path.basename(self.airports_csv)}: {exc}"
+            self._airports.clear()
+
+        if self.runways_csv and os.path.isfile(self.runways_csv):
+            try:
+                with open(self.runways_csv, newline="", encoding="utf-8-sig",
+                          errors="replace") as handle:
+                    for row in csv.DictReader(handle):
+                        if (row.get("closed") or "0").strip() in ("1", "yes"):
+                            continue
+                        ident = (row.get("airport_ident") or "").strip().upper()
+                        if ident:
+                            self._runways.setdefault(ident, []).append(row)
+            except (OSError, UnicodeDecodeError, csv.Error) as exc:
+                # Runways are the optional half: keep the airports.
+                self._error = f"{os.path.basename(self.runways_csv)}: {exc}"
+                self._runways.clear()
+        self._loaded = True
 
     def airport(self, icao: str) -> Optional[Airport]:
         self._load()

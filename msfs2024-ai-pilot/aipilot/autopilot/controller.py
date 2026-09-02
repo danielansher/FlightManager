@@ -42,7 +42,7 @@ from ..route.plan import FlightPlan
 from ..route.planner import rebuild_departure
 from ..route.profile import build_vertical_profile
 from ..sim.base import SimBackend, SimState
-from ..units import mach_to_tas, tas_to_cas
+from ..units import FEET_PER_NM, mach_to_tas, tas_to_cas
 from ..geo import initial_bearing_deg, normalize_deg
 from ..route.taxi import runway_entry_point, simplify
 from .ground import (
@@ -98,8 +98,18 @@ HANDOVER_WARNING_AGL_FT = 1000.0
 MISSED_APPROACH_HEIGHT_FT = 3000.0
 
 #: Height at which the flare begins on a landing the AI Pilot is flying itself.
-#: A floor, not a fixed value -- see :meth:`AIPilot._flare_height`.
-FLARE_AGL_FT = 80.0
+#: Where the round-out begins. A floor, not a fixed value: at a coarse
+#: control rate :meth:`AIPilot._flare_height` raises it so the aeroplane
+#: cannot fall through the whole window between two cycles.
+#:
+#: Forty feet, not eighty. A jet transport begins its flare at about thirty,
+#: and starting at eighty begins it a quarter of a mile before the threshold:
+#: the aeroplane then floats down the runway on a decaying rate and touches
+#: down three thousand feet in. Soft, but three thousand feet of a runway
+#: spent, which on a six thousand foot runway is most of what there was to
+#: stop in. Forty leaves clear air above the thrust retard at thirty and
+#: brings the touchdown back by seven hundred feet or so, at the same rate.
+FLARE_AGL_FT = 40.0
 
 #: Seconds of flare wanted before the wheels arrive.
 FLARE_LEAD_S = 5.0
@@ -125,6 +135,20 @@ OVERSPEED_MARGIN_KT = 15.0
 
 #: Ground speed at which the landing roll is over and the taxi in begins.
 TAXI_IN_HANDOVER_KT = 25.0
+
+#: How far down a runway a touchdown stops being a landing and starts being a
+#: problem. A jet transport aims about a thousand feet in; a third of the way
+#: down is late enough to be worth saying out loud.
+LONG_LANDING_FRACTION = 0.33
+
+#: How far off the centreline is too far at the five hundred foot gate.
+#: Half a nautical mile used to be allowed, which is three thousand feet: an
+#: approach that far out of line does not land on the runway at all, and the
+#: gate existed while never once firing on it. This is about four hundred and
+#: eighty feet -- comfortably wider than any runway, so it does not cry wolf,
+#: and tight enough that anything reaching it really would have landed in the
+#: grass. The guidance settles inside twenty feet, so there is ample margin.
+STABILISATION_XTK_NM = 0.08
 
 #: How often to ask the tug to disconnect, and how long to wait before giving
 #: up on the simulator ever reporting that it has. The interval matters: the
@@ -166,6 +190,11 @@ FLARE_MAX_VS_FPM = -900.0
 
 #: Retard the thrust levers at this height, as the callout says.
 RETARD_AGL_FT = 30.0
+
+#: Height at which to straighten the aeroplane along the runway. Late, so a
+#: crosswind has as little time as possible to push it off the centreline
+#: between straightening and touchdown.
+DECRAB_AGL_FT = 12.0
 
 
 @dataclass
@@ -318,6 +347,12 @@ class AIPilot:
         self._last_airborne_vs = 0.0
         self._commanded_flaps = 0
         self._touchdown_vs: Optional[float] = None
+        #: Where the wheels came down. Not just for the record: a landing
+        #: three thousand feet down a runway is a bad landing even when the
+        #: rate was gentle, and the rate on its own does not show it.
+        self.touchdown_position: Optional[LatLon] = None
+        #: Feet past the threshold, once it has landed.
+        self.touchdown_along_ft: Optional[float] = None
 
     # -- Lifecycle -----------------------------------------------------------
     def engage(self, state: Optional[SimState] = None) -> None:
@@ -467,7 +502,7 @@ class AIPilot:
 
         if phase is Phase.APPROACH:
             if state.on_ground:
-                self._touchdown_vs = self._last_airborne_vs
+                self._record_touchdown(state)
                 self._enter_phase(Phase.ROLLOUT, "touchdown")
             else:
                 self._check_stabilisation(state)
@@ -481,7 +516,7 @@ class AIPilot:
             if state.on_ground:
                 # The state already reads zero once on the ground, so use the
                 # rate from the cycle before touchdown.
-                self._touchdown_vs = self._last_airborne_vs
+                self._record_touchdown(state)
                 self._enter_phase(Phase.ROLLOUT, "touchdown")
             return
 
@@ -612,7 +647,7 @@ class AIPilot:
             # Keep straight on the runway with the nosewheel until flying.
             # Cross-track as well as heading: holding the runway heading while
             # displaced simply runs parallel to the centreline off the edge.
-            length_nm = runway.length_ft / 6076.11548556
+            length_nm = runway.length_ft / FEET_PER_NM
             far_end = destination_point(runway.threshold,
                                         runway.heading_true_deg, length_nm)
             offset = cross_track_nm(state.position, runway.threshold, far_end)
@@ -735,9 +770,16 @@ class AIPilot:
         if not self._flaring:
             self._flaring = True
             self._event("Flare")
-        if runway is not None:
+        if runway is not None and state.altitude_agl_ft <= DECRAB_AGL_FT:
             # Kick off the drift so the aeroplane lands along the runway rather
-            # than across it.
+            # than across it -- but only in the last few seconds.
+            #
+            # Straightening at the top of the flare stops the aeroplane
+            # correcting for the wind for the rest of the landing, and in a
+            # strong crosswind ten seconds of undrifted approach is a hundred
+            # and fifty feet sideways, which on a two-hundred-foot runway puts
+            # the wheels on the edge. A crew holds the crab until the wheels
+            # are nearly down for the same reason.
             self.adapter.set_heading_true(runway.heading_true_deg, state)
         # Descend at height over tau. The rate then decays with the height, so
         # the aeroplane settles onto the runway rather than flying into it: a
@@ -821,7 +863,7 @@ class AIPilot:
             self.adapter.set_pushback(True, state)
             self.adapter.set_tug_heading(self.pushback.final_heading)
             self._event(
-                f"Pushing back {self.pushback.target_distance_nm * 6076:.0f} ft, "
+                f"Pushing back {self.pushback.target_distance_nm * FEET_PER_NM:.0f} ft, "
                 f"turning onto {self.pushback.final_heading:.0f} degrees.")
             self._enter_phase(Phase.PUSHBACK, "pushback")
             return True
@@ -866,6 +908,32 @@ class AIPilot:
                     f"{len(route)} turns.")
         self.adapter.set_parking_brake(False, state)
         return True
+
+    def _record_touchdown(self, state: SimState) -> None:
+        """Note the rate and the spot, and say how far down the runway it was.
+
+        A gentle touchdown half way along a runway is still a bad landing,
+        and the rate on its own never shows it.
+        """
+        self._touchdown_vs = self._last_airborne_vs
+        self.touchdown_position = state.position
+        runway = self.plan.arrival_runway
+        if runway is None:
+            return
+        length_nm = runway.length_ft / FEET_PER_NM
+        far = destination_point(runway.threshold, runway.heading_true_deg,
+                                length_nm)
+        along_ft = along_track_nm(state.position, runway.threshold,
+                                  far) * FEET_PER_NM
+        self.touchdown_along_ft = along_ft
+        if along_ft < 0:
+            self._event(f"Touched down {abs(along_ft):.0f} ft short of "
+                        f"{runway.ident}.", "error")
+        elif along_ft > runway.length_ft * LONG_LANDING_FRACTION:
+            self._event(
+                f"Long landing: touched down {along_ft:.0f} ft down a "
+                f"{runway.length_ft:.0f} ft runway, leaving "
+                f"{runway.length_ft - along_ft:.0f} ft to stop in.", "warning")
 
     def _start_taxi_in(self, state: SimState) -> bool:
         """Route from where the aeroplane stopped to a parking stand.
@@ -1009,7 +1077,7 @@ class AIPilot:
             self.adapter.set_throttle_percent(0.0)
             self.adapter.set_wheel_brakes(1.0)
             return
-        length_nm = runway.length_ft / 6076.11548556
+        length_nm = runway.length_ft / FEET_PER_NM
         far_end = destination_point(runway.threshold, runway.heading_true_deg,
                                     length_nm)
         offset = cross_track_nm(state.position, runway.threshold, far_end)
@@ -1204,7 +1272,7 @@ class AIPilot:
     def _runway_under_aircraft(self, state: SimState) -> Optional[object]:
         """The departure runway the aeroplane is actually lined up on, if any."""
         for runway in self.plan.origin.runways:
-            length_nm = runway.length_ft / 6076.11548556
+            length_nm = runway.length_ft / FEET_PER_NM
             if length_nm < 0.05:
                 continue
             far_end = destination_point(runway.threshold,
@@ -1228,7 +1296,7 @@ class AIPilot:
         runway = self.plan.departure_runway
         if runway is None or not state.on_ground:
             return False
-        length_nm = runway.length_ft / 6076.11548556
+        length_nm = runway.length_ft / FEET_PER_NM
         far_end = destination_point(runway.threshold, runway.heading_true_deg,
                                     length_nm)
         along = along_track_nm(state.position, runway.threshold, far_end)
@@ -1394,8 +1462,10 @@ class AIPilot:
             problems.append("gear not down")
         if state.flaps_index < self.profile.landing_flaps_index - 1:
             problems.append("not configured for landing")
-        if abs(self.status.cross_track_nm) > 0.5:
-            problems.append(f"{abs(self.status.cross_track_nm):.1f} nm off the centreline")
+        if abs(self.status.cross_track_nm) > STABILISATION_XTK_NM:
+            problems.append(
+                f"{abs(self.status.cross_track_nm) * FEET_PER_NM:.0f} ft off "
+                "the centreline")
         if state.vertical_speed_fpm < -1200.0:
             problems.append(f"{-state.vertical_speed_fpm:.0f} fpm descent")
 

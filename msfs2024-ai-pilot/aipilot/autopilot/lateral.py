@@ -21,6 +21,7 @@ Waiting until overhead means every turn overshoots and then S-turns back.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Optional
 
@@ -33,6 +34,7 @@ from ..geo import (
     initial_bearing_deg,
     normalize_deg,
     turn_anticipation_nm,
+    turn_radius_nm,
     wind_correction_angle_deg,
 )
 from ..route.plan import FlightPlan
@@ -46,13 +48,34 @@ XTK_GAIN_DEG_PER_NM = 3.0
 #: stops converging usefully and the aeroplane just flies sideways.
 MAX_INTERCEPT_DEG = 45.0
 
-#: On final the gain is higher and the limit lower: there is not much track
-#: left in which to converge, so corrections must bite sooner, but a large
-#: intercept angle close in cannot be flown out before the threshold. Ten
-#: degrees per mile puts the aeroplane back on the centreline within about
-#: three miles from a mile off, which is what the stabilisation gate needs.
+#: Bank limit on final. A steep turn close to the ground is neither
+#: comfortable nor stable.
+FINAL_BANK_LIMIT_DEG = 15.0
+
+#: On final the limit is lower: a large intercept angle close in cannot be
+#: flown out before the threshold.
 FINAL_INTERCEPT_DEG = 25.0
-FINAL_XTK_GAIN_DEG_PER_NM = 10.0
+
+#: On final the correction is worked out by pure pursuit -- aim at a point on
+#: the centreline some way ahead -- rather than by a gain per mile.
+#:
+#: A linear gain converges asymptotically, and asymptotically is not good
+#: enough when the track runs out at the threshold. At ten degrees per mile a
+#: hundred yards of offset earns less than a degree of correction, which over
+#: the mile that is left closes almost nothing: the aeroplane arrived at the
+#: stabilisation gate five hundred feet to one side and touched down in the
+#: grass beside a two-hundred-foot runway, having reported itself lined up the
+#: whole way down. Pure pursuit gives a correction that grows with the offset
+#: relative to how far ahead it is looking, so it actually arrives.
+#:
+#: The lookahead is derived from the turning circle, not fixed. A lookahead
+#: point *inside* the turning circle cannot be reached -- the aeroplane turns
+#: towards it, misses, and weaves across the centreline -- and that is
+#: geometry rather than tuning, which is what a hard-coded distance gets wrong
+#: the moment the speed changes. The same reasoning, and the same factor, as
+#: the taxi guidance.
+FINAL_LOOKAHEAD_FACTOR = 1.3
+FINAL_LOOKAHEAD_FLOOR_NM = 0.5
 
 #: Sequence a fix when this close even if the turn geometry says otherwise --
 #: covers a fix flown at very low speed, and the last fix of the route.
@@ -145,17 +168,24 @@ class LateralGuidance:
         leg_course = self.leg_course_deg(position)
         xtk = cross_track_nm(position, start, end) if distance_nm(start, end) > 0.1 else 0.0
 
-        gain = FINAL_XTK_GAIN_DEG_PER_NM if is_final else XTK_GAIN_DEG_PER_NM
-        limit = FINAL_INTERCEPT_DEG if is_final else MAX_INTERCEPT_DEG
-        correction = max(-limit, min(limit, -xtk * gain))
+        bank_limit = self.max_bank_deg
+        if is_final:
+            bank_limit = min(bank_limit, FINAL_BANK_LIMIT_DEG)
+
+        if is_final:
+            limit = FINAL_INTERCEPT_DEG
+            lookahead = max(FINAL_LOOKAHEAD_FLOOR_NM,
+                            turn_radius_nm(tas_kt, bank_limit)
+                            * FINAL_LOOKAHEAD_FACTOR)
+            correction = math.degrees(math.atan2(-xtk, lookahead))
+        else:
+            limit = MAX_INTERCEPT_DEG
+            correction = -xtk * XTK_GAIN_DEG_PER_NM
+        correction = max(-limit, min(limit, correction))
         desired_track = normalize_deg(leg_course + correction)
 
         wca = wind_correction_angle_deg(desired_track, tas_kt, wind_from_deg, wind_kt)
         heading = normalize_deg(desired_track + wca)
-
-        bank_limit = self.max_bank_deg
-        if is_final:
-            bank_limit = min(bank_limit, 15.0)
 
         return LateralCommand(
             heading_true_deg=heading,

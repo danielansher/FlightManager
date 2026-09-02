@@ -22,6 +22,7 @@ from somewhere deep in a query.
 
 from __future__ import annotations
 
+import math
 import os
 import sqlite3
 from typing import Optional
@@ -77,6 +78,28 @@ def default_database_paths(msfs_version: Optional[str] = None) -> list[str]:
             if os.path.isfile(candidate):
                 found.append(candidate)
     return found
+
+
+def _coordinate(lat, lon) -> Optional[LatLon]:
+    """A position from the database, or None if the row cannot supply one.
+
+    Scenery databases contain rows with a NULL or text coordinate, and a
+    single such row used to raise out of the middle of an airport lookup --
+    taking the whole airport with it, not merely the runway that was wrong.
+    Every other field on those rows was already guarded; the coordinates were
+    the ones that were missed. Non-finite values are rejected too: float()
+    accepts "nan" and "inf" quite happily, and they survive every later guard
+    until something divides by them.
+    """
+    try:
+        point = LatLon(float(lat), float(lon))
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(point.lat) and math.isfinite(point.lon)):
+        return None
+    if not (-90.0 <= point.lat <= 90.0 and -180.0 <= point.lon <= 360.0):
+        return None
+    return point
 
 
 class LittleNavmapProvider(NavDataProvider):
@@ -172,11 +195,16 @@ class LittleNavmapProvider(NavDataProvider):
             return None
         if row is None:
             return None
+        position = _coordinate(row[lat_col], row[lon_col])
+        if position is None:
+            self._error = (f"{icao.strip().upper()} has no usable position in "
+                           "the navigation database.")
+            return None
         elevation = float(row[alt_col]) if alt_col and row[alt_col] is not None else 0.0
         return Airport(
             icao=str(row[ident_col]).upper(),
             name=str(row[name_col]) if name_col and row[name_col] else "",
-            position=LatLon(float(row[lat_col]), float(row[lon_col])),
+            position=position,
             elevation_ft=elevation,
             magvar_deg=float(row[magvar_col]) if magvar_col and row[magvar_col] is not None else 0.0,
             runways=self._runways(conn, row["airport_id"], elevation),
@@ -223,13 +251,17 @@ class LittleNavmapProvider(NavDataProvider):
                     continue
                 if end is None:
                     continue
+                threshold = _coordinate(end[end_lat], end[end_lon])
+                if threshold is None:
+                    # One unusable runway end, not a whole unusable airport.
+                    continue
                 heading = float(end[end_heading]) if end[end_heading] is not None else 0.0
                 ils_ident = end[ils_ident_col] if ils_ident_col and ils_ident_col in end.keys() else None
                 freq, course, gs_angle = self._ils(conn, ils_ident, str(end[end_name]))
                 out.append(
                     Runway(
                         ident=str(end[end_name]).upper().replace("RW", ""),
-                        threshold=LatLon(float(end[end_lat]), float(end[end_lon])),
+                        threshold=threshold,
                         heading_true_deg=normalize_deg(heading),
                         length_ft=length,
                         elevation_ft=float(end[alt_col]) if alt_col and end[alt_col] is not None
@@ -300,8 +332,10 @@ class LittleNavmapProvider(NavDataProvider):
             except sqlite3.Error:
                 continue
             for row in rows:
-                point = Waypoint(str(row[ident_col]).upper(),
-                                 LatLon(float(row[lat_col]), float(row[lon_col])), kind)
+                where = _coordinate(row[lat_col], row[lon_col])
+                if where is None:
+                    continue
+                point = Waypoint(str(row[ident_col]).upper(), where, kind)
                 if near is None:
                     return point
                 d = distance_nm(near, point.position)

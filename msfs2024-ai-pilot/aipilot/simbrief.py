@@ -20,6 +20,7 @@ line.
 from __future__ import annotations
 
 import json
+import math
 import re
 import urllib.error
 import urllib.parse
@@ -264,7 +265,9 @@ def _altitude(value: Any) -> Optional[float]:
         number = float(text)
     except ValueError:
         return None
-    if number <= 0:
+    # "inf" and "nan" are perfectly good floats and pass every later guard
+    # until something divides by them.
+    if not math.isfinite(number) or number <= 0:
         return None
     # SimBrief reports feet, but a template that writes a flight level
     # instead should not put the aeroplane at 380 ft.

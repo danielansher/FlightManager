@@ -31,6 +31,10 @@ FPM_PER_MPS = 196.850393701
 
 # --- Earth ------------------------------------------------------------------
 EARTH_RADIUS_NM = 3440.06479482
+
+#: Feet in a nautical mile. Runway lengths are in feet and everything
+#: geometric is in nautical miles, so this conversion is everywhere.
+FEET_PER_NM = 6076.11548556
 STD_TEMP_C = 15.0
 STD_LAPSE_C_PER_FT = 0.0019812  # 1.98 degC per 1000 ft
 SPEED_OF_SOUND_SL_KT = 661.4788

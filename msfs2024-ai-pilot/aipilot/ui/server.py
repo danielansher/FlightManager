@@ -50,6 +50,10 @@ class FlightSession:
         self.speed = 1.0
         self.ground_notes: list[str] = []
         self.recorder = None
+        #: Set while engage() is doing its slow setup, so a second request
+        #: cannot slip past the "already running" check before the control
+        #: thread exists.
+        self._engaging = False
 
     # -- Planning ------------------------------------------------------------
     def build_plan(self, request: dict) -> dict:
@@ -62,6 +66,16 @@ class FlightSession:
             airports_csv=request.get("airports_csv") or None,
             runways_csv=request.get("runways_csv") or None,
         ))
+        try:
+            return self._plan_with(key, profile, navdata, request)
+        except BaseException:
+            # A plan that fails part way used to abandon the database handle
+            # it had just opened. The command line closes its nav data on
+            # every path; this was the one place that did not.
+            navdata.close()
+            raise
+
+    def _plan_with(self, key, profile, navdata, request: dict) -> dict:
         brief = None
         if request.get("simbrief"):
             from ..simbrief import SimBriefError, fetch_plan
@@ -157,9 +171,30 @@ class FlightSession:
         with self.lock:
             if self.thread is not None and self.thread.is_alive():
                 raise ValueError("A flight is already running.")
+            if self._engaging:
+                raise ValueError("A flight is already being started.")
             pending = getattr(self, "_pending", None)
             if pending is None:
                 raise ValueError("Build a flight plan first.")
+            # Claimed inside the same lock as the check. Everything after this
+            # is slow -- connecting to SimConnect, building the adapter and
+            # both taxiway networks -- and the thread that proves a flight is
+            # running does not exist until the end of it. Two clicks, or two
+            # browser tabs, used to get two control threads commanding the
+            # same aeroplane at four hertz, with only one of them reachable to
+            # stop.
+            self._engaging = True
+        try:
+            return self._engage(pending, request)
+        finally:
+            # Cleared however it ends. Left set by a failure -- a simulator
+            # that will not connect, say -- the panel would refuse every later
+            # attempt with "a flight is already being started" and need a
+            # restart.
+            with self.lock:
+                self._engaging = False
+
+    def _engage(self, pending, request: dict) -> dict:
         key, profile, plan, wind = pending
 
         use_mock = request.get("sim", "msfs") == "mock"
@@ -386,8 +421,11 @@ class Handler(BaseHTTPRequestHandler):
         self._send(status, json.dumps(payload).encode(), "application/json")
 
     def _static(self, name: str) -> None:
+        # The separator matters: without it "/static/../static_private/x"
+        # normalises to a path that still starts with the string STATIC_DIR
+        # and passes the guard.
         path = os.path.normpath(os.path.join(STATIC_DIR, name))
-        if not path.startswith(STATIC_DIR) or not os.path.isfile(path):
+        if not path.startswith(STATIC_DIR + os.sep) or not os.path.isfile(path):
             self._send(404, b"not found", "text/plain")
             return
         kind = {".html": "text/html", ".css": "text/css",
@@ -407,6 +445,12 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- Routes --------------------------------------------------------------
     def do_GET(self) -> None:
+        try:
+            self._get()
+        except Exception as exc:                      # never drop the socket
+            self._json({"ok": False, "error": f"{type(exc).__name__}: {exc}"}, 500)
+
+    def _get(self) -> None:
         path = self.path.split("?", 1)[0]
         if path in ("/", "/index.html"):
             self._static("index.html")
@@ -415,14 +459,26 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/aircraft":
             self._json([{"key": key, "name": name} for key, name in available_aircraft()])
         elif path == "/api/state":
-            since = 0
-            if "?" in self.path:
-                for part in self.path.split("?", 1)[1].split("&"):
-                    if part.startswith("since="):
-                        since = int(part[6:] or 0)
-            self._json(SESSION.snapshot(since))
+            self._json(SESSION.snapshot(self._since()))
         else:
             self._send(404, b"not found", "text/plain")
+
+    def _since(self) -> int:
+        """The event cursor from the query string, if it is a number.
+
+        Anything else means zero rather than an exception: this used to be a
+        bare int(), and a stale tab or a hand-typed URL took the traceback
+        through the flight log and dropped the connection.
+        """
+        if "?" not in self.path:
+            return 0
+        for part in self.path.split("?", 1)[1].split("&"):
+            if part.startswith("since="):
+                try:
+                    return max(0, int(part[6:] or 0))
+                except ValueError:
+                    return 0
+        return 0
 
     def do_POST(self) -> None:
         path = self.path.split("?", 1)[0]

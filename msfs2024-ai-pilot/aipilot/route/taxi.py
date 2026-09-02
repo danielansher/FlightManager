@@ -45,6 +45,14 @@ MAX_SEGMENT_NM = 0.08
 #: down an active runway because it happened to be the shortest way.
 RUNWAY_COST_FACTOR = 8.0
 
+#: The longest a single taxi path can plausibly be. Beyond this the row is
+#: not a taxiway, it is a data error.
+MAX_PATH_NM = 3.0
+
+
+def _finite(position: LatLon) -> bool:
+    return math.isfinite(position.lat) and math.isfinite(position.lon)
+
 
 @dataclass
 class GroundNode:
@@ -62,7 +70,13 @@ class GroundNetwork:
     def __init__(self, layout: GroundLayout) -> None:
         self.layout = layout
         self.nodes: list[GroundNode] = []
-        self._index: dict[tuple[int, int], int] = {}
+        #: Grid cell -> every node in it. A list, not a single node: two
+        #: junctions further apart than the weld tolerance can share a cell,
+        #: and storing one per cell meant the second evicted the first, which
+        #: could then never be found again. Two segments meeting at bitwise
+        #: identical coordinates then became unconnected, and the route across
+        #: them came back empty for no visible reason.
+        self._index: dict[tuple[int, int], list[int]] = {}
         for path in layout.taxi_paths:
             self._add_path(path)
 
@@ -87,18 +101,15 @@ class GroundNetwork:
         best, best_distance = None, WELD_TOLERANCE_NM
         for dlat in (-1, 0, 1):
             for dlon in (-1, 0, 1):
-                candidate = self._index.get((lat_key + dlat, lon_key + dlon))
-                if candidate is None:
-                    continue
-                d = distance_nm(position, self.nodes[candidate].position)
-                if d <= best_distance:
-                    best, best_distance = candidate, d
+                for candidate in self._index.get((lat_key + dlat, lon_key + dlon), ()):
+                    d = distance_nm(position, self.nodes[candidate].position)
+                    if d <= best_distance:
+                        best, best_distance = candidate, d
         if best is not None:
-            self._index[(lat_key, lon_key)] = best
             return best
         index = len(self.nodes)
         self.nodes.append(GroundNode(index, position))
-        self._index[(lat_key, lon_key)] = index
+        self._index.setdefault((lat_key, lon_key), []).append(index)
         return index
 
     def _connect(self, a: int, b: int, length_nm: float, cost_nm: float) -> None:
@@ -108,8 +119,20 @@ class GroundNetwork:
         self.nodes[b].edges.append((a, length_nm, cost_nm))
 
     def _add_path(self, path: TaxiPath) -> None:
+        if not (_finite(path.start) and _finite(path.end)):
+            # A NaN or infinite coordinate. float("nan") passes every
+            # try/except float(...) guard on the way in from the scenery
+            # database, so it has to be stopped here or it detonates in the
+            # grid arithmetic.
+            return
         total = path.length_nm
         if total < 1e-6:
+            return
+        if total > MAX_PATH_NM:
+            # A taxiway is not thirty miles long. One row with a zero
+            # coordinate -- the classic scenery-export slip -- would otherwise
+            # be chopped into tens of thousands of nodes, and every route
+            # request scans all of them.
             return
         # Split long segments so a route can join partway along one.
         pieces = max(1, int(math.ceil(total / MAX_SEGMENT_NM)))

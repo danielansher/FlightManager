@@ -150,6 +150,13 @@ def test_flyover_fix_is_not_cut(plan):
 
 
 def test_final_approach_uses_a_tighter_intercept(plan):
+    """Tighter than enroute, and shallower in bank -- but still decisive.
+
+    A mile off the centreline three miles out has to be flown out before the
+    threshold, so this is a proper intercept, not a nudge.
+    """
+    from aipilot.autopilot.lateral import FINAL_INTERCEPT_DEG, MAX_INTERCEPT_DEG
+
     guidance = LateralGuidance(plan)
     index = plan.threshold_index
     guidance.direct_to(index)
@@ -157,8 +164,56 @@ def test_final_approach_uses_a_tighter_intercept(plan):
     point = destination_point(plan[index].position, course + 180, 3.0)
     offset = destination_point(point, course + 90, 1.0)
     command = guidance.update(offset, 150, 0, 0, approach_mode=True)
-    assert abs(signed_diff_deg(command.desired_track_deg, course)) <= 21
+
+    intercept = abs(signed_diff_deg(command.desired_track_deg, course))
+    assert intercept <= FINAL_INTERCEPT_DEG < MAX_INTERCEPT_DEG
+    assert intercept > 15, \
+        f"only {intercept:.0f} degrees to close a mile in three: too feeble"
     assert command.bank_limit_deg <= 15
+
+
+def test_a_small_offset_on_final_earns_a_correction_that_can_close_it(plan):
+    """The defect this replaced: a hundred yards off earned less than a
+    degree, which over the mile that was left closed nothing, and the
+    aeroplane landed beside the runway while reporting itself lined up."""
+    guidance = LateralGuidance(plan)
+    index = plan.threshold_index
+    guidance.direct_to(index)
+    course = plan.leg_course_deg(index)
+    point = destination_point(plan[index].position, course + 180, 1.5)
+    offset = destination_point(point, course + 90, 0.1)      # ~600 ft
+    command = guidance.update(offset, 150, 0, 0, approach_mode=True)
+
+    correction = abs(signed_diff_deg(command.desired_track_deg, course))
+    assert correction > 3.0, \
+        f"{correction:.1f} degrees for 600 ft off is not going to close it"
+    # It has to actually close, over the final approach rather than over the
+    # last few seconds: at 150 kt this is the sideways speed available, and a
+    # three mile final is about seventy seconds of it. (Closing 600 ft inside
+    # the last mile is not the standard -- no aeroplane can, and a crew that
+    # far out of line at a mile goes around instead. That is what the
+    # stabilisation gate is for.)
+    import math
+    closure_fps = 150 * math.sin(math.radians(correction)) * 1.68781
+    assert closure_fps * 70 > 600, \
+        f"closes only {closure_fps * 70:.0f} ft over a three mile final"
+
+
+def test_the_correction_on_final_eases_off_as_it_arrives(plan):
+    """It must converge, not weave across the centreline."""
+    guidance = LateralGuidance(plan)
+    index = plan.threshold_index
+    guidance.direct_to(index)
+    course = plan.leg_course_deg(index)
+    point = destination_point(plan[index].position, course + 180, 1.5)
+
+    corrections = []
+    for offset_nm in (0.3, 0.1, 0.03, 0.005):
+        where = destination_point(point, course + 90, offset_nm)
+        command = guidance.update(where, 150, 0, 0, approach_mode=True)
+        corrections.append(abs(signed_diff_deg(command.desired_track_deg, course)))
+    assert corrections == sorted(corrections, reverse=True)
+    assert corrections[-1] < 1.0, "still fighting when it is already there"
 
 
 def test_guidance_terminates_at_the_last_fix(plan):

@@ -35,8 +35,16 @@ DEFAULT_TIMEOUT_S = 6.0
 #: decides on its own.
 GUST_WEIGHT = 0.5
 
+#: Faster than any surface wind on this planet. Beyond it the observation is
+#: corrupt, and a corrupt wind must not choose a runway.
+MAX_PLAUSIBLE_WIND_KT = 250.0
+
+#: The leading guard is a negative lookbehind, not \\b: a word boundary needs a
+#: word character on one side, and "///25KT" begins with a slash, so the
+#: not-reported-direction case could never match and a known twenty-five knot
+#: wind was quietly read as calm.
 _WIND_GROUP = re.compile(
-    r"\b(?P<dir>\d{3}|VRB|///)(?P<speed>\d{2,3}|//)"
+    r"(?<![\w/])(?P<dir>\d{3}|VRB|///)(?P<speed>\d{2,3}|//)"
     r"(?:G(?P<gust>\d{2,3}))?(?P<unit>KT|MPS|KMH)\b"
 )
 _STATION = re.compile(r"\b([A-Z][A-Z0-9]{3})\s+\d{6}Z\b")
@@ -135,6 +143,9 @@ def _parse_wind(text: str) -> MetarWind:
     if speed_text == "//":
         return CALM
     speed_kt = float(speed_text) * unit
+    if speed_kt > MAX_PLAUSIBLE_WIND_KT:
+        # A corrupt observation should not decide which runway to use.
+        return CALM
 
     gust_text = match.group("gust")
     gust_kt = float(gust_text) * unit if gust_text else None

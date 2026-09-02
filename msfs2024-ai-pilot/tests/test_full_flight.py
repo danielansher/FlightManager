@@ -92,8 +92,13 @@ def test_it_arrives_lined_up_with_the_runway(navdata):
     result = fly_flight(navdata, "EGLL", "EGCC", "b787-10",
                         wind_from_deg=180, wind_kt=40)
     assert result.gate_xtk_nm is not None, "never reached the stabilisation gate"
-    assert result.gate_xtk_nm < 0.5, \
-        f"{result.gate_xtk_nm:.2f} nm off the centreline at 500 ft"
+    # Half a mile used to be allowed here, which is three thousand feet: an
+    # approach that far out of line lands beside the runway, and the assertion
+    # passed on one that was five hundred feet off the whole way down. This is
+    # about three hundred feet, against a guidance loop that settles inside
+    # twenty.
+    assert result.gate_xtk_nm < 0.05, \
+        f"{result.gate_xtk_nm * 6076:.0f} ft off the centreline at 500 ft"
 
 
 @pytest.mark.parametrize("arrival", ["05L", "23R"])
@@ -102,7 +107,8 @@ def test_it_lines_up_from_either_direction(navdata, arrival):
     this exercises both the straight-in join and the full circuit."""
     result = fly_flight(navdata, "EGLL", "EGCC", "b787-10", arrival_runway=arrival)
     assert result.completed
-    assert result.gate_xtk_nm is not None and result.gate_xtk_nm < 0.5
+    assert result.gate_xtk_nm is not None and result.gate_xtk_nm < 0.05, \
+        f"{(result.gate_xtk_nm or 0) * 6076:.0f} ft off the centreline at 500 ft"
 
 
 def test_the_configuration_is_managed_through_the_flight(navdata):

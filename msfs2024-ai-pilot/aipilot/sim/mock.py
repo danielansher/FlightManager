@@ -99,6 +99,9 @@ class MockSim(SimBackend):
         #: were, which is what turns a descent into a four-hundred-knot dive.
         self.autothrottle_effective = autothrottle_effective
         self.model = model or MockAircraftModel()
+        #: The wind aloft. What the aeroplane feels, and what the state
+        #: reports, is this reduced through the boundary layer.
+        self.free_stream_wind_kt = wind_kt
         self._terrain = terrain or (lambda _pos: field_elevation_ft)
         self.state = SimState(
             lat=start.lat,
@@ -323,6 +326,7 @@ class MockSim(SimBackend):
         st.sim_time_s += dt
         st.ground_elevation_ft = self._terrain(st.position)
 
+        self._step_wind()
         self._step_config(dt)
         self._step_speed(dt)
         self._step_vertical(dt)
@@ -518,6 +522,21 @@ class MockSim(SimBackend):
             return 1.0
         return SURFACE_WIND_FRACTION + (1.0 - SURFACE_WIND_FRACTION) * (agl / BOUNDARY_LAYER_FT)
 
+    def _step_wind(self) -> None:
+        """Report the wind the aeroplane is actually in.
+
+        The simulator's AMBIENT WIND VELOCITY is the wind where the aeroplane
+        is, not the free-stream value aloft. This mock used to reduce the wind
+        for its own integration and then report the unreduced figure, so the
+        guidance computed a drift correction for forty knots while fourteen
+        were blowing, crabbed three times too much, and arrived a thousand
+        feet upwind of the centreline. The guidance was not at fault and could
+        not have been fixed, because the numbers it was given were not the
+        ones being flown.
+        """
+        st = self.state
+        st.wind_kt = self.free_stream_wind_kt * self._surface_wind_factor()
+
     def _step_position(self, dt: float) -> None:
         st = self.state
         if st.pushback_attached and st.on_ground:
@@ -551,7 +570,7 @@ class MockSim(SimBackend):
         hdg = math.radians(st.heading_true_deg)
         air_n = st.tas_kt * math.cos(hdg)
         air_e = st.tas_kt * math.sin(hdg)
-        wind_kt = st.wind_kt * self._surface_wind_factor()
+        wind_kt = st.wind_kt
         wind_to = math.radians(st.wind_from_deg + 180.0)
         wind_n = wind_kt * math.cos(wind_to)
         wind_e = wind_kt * math.sin(wind_to)
