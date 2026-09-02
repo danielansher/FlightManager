@@ -83,6 +83,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("aircraft", help="list the aeroplanes it knows how to fly")
 
+    find = subparsers.add_parser(
+        "find-simconnect",
+        help="search this machine for SimConnect.dll, which several tools you "
+             "may already have will have installed")
+    find.add_argument("--copy", action="store_true",
+                      help="copy the first one found into place automatically")
+    find.add_argument("--quick", action="store_true",
+                      help="only check the usual locations; do not scan drives")
+    find.add_argument("--seconds", type=float, default=90.0,
+                      help="how long to spend scanning (default: 90)")
+
     doctor = subparsers.add_parser(
         "doctor", help="check the simulator connection, the WASM bridge and the nav data")
     doctor.add_argument("--msfs", choices=("2020", "2024"), default=None,
@@ -367,6 +378,12 @@ def command_doctor(args) -> int:
     return run_doctor(args)
 
 
+def command_find_simconnect(args) -> int:
+    from .findsim import run
+
+    return run(args)
+
+
 def command_lvars(args) -> int:
     from .doctor import run_lvars
 
@@ -379,6 +396,7 @@ COMMANDS = {
     "ui": command_ui,
     "aircraft": command_aircraft,
     "doctor": command_doctor,
+    "find-simconnect": command_find_simconnect,
     "lvars": command_lvars,
 }
 

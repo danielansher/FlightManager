@@ -109,8 +109,10 @@ def _check_simconnect() -> int:
 
     dll = find_simconnect_dll()
     if dll is None:
-        print(f"{FAIL} SimConnect.dll not found. Install the MSFS SDK, copy the DLL "
-              "next to the aipilot package, or set AIPILOT_SIMCONNECT_DLL.")
+        print(f"{FAIL} SimConnect.dll not found in any of the usual places.")
+        print("       Several tools bundle a copy, so there may well be one on this")
+        print("       machine already. To look, and put it in place if there is:")
+        print("         python -m aipilot find-simconnect --copy")
         return 1
     print(f"{TICK} SimConnect.dll at {dll}")
 

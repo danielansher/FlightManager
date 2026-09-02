@@ -71,10 +71,14 @@ has to be typed:
 
 | | |
 |---|---|
-| `Check-My-Setup.bat` | checks everything and says what is missing |
 | `Try-It-Offline.bat` | flies a whole flight with no simulator involved |
+| `Check-My-Setup.bat` | checks everything and says what is missing |
+| `Find-SimConnect.bat` | finds SimConnect.dll on your PC and puts it in place |
 | `Fly.bat` | asks where to, then flies there |
 | `AI-Pilot-Panel.bat` | opens the control panel in your browser |
+
+You never touch the simulator's own AI Pilot — this replaces it, and leaving it
+switched on means two things are flying the same aeroplane.
 
 There is also a control panel in the browser, which is the closer analogue of
 the original button:
