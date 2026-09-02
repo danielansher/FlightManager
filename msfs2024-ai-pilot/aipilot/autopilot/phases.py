@@ -18,13 +18,15 @@ class Phase(str, Enum):
     APPROACH = "approach"
     LANDING = "landing"
     ROLLOUT = "rollout"
+    TAXI_IN = "taxi_in"
     COMPLETE = "complete"
     ABORTED = "aborted"
 
     @property
     def on_ground(self) -> bool:
         return self in (Phase.PREFLIGHT, Phase.PUSHBACK, Phase.TAXI,
-                        Phase.TAKEOFF, Phase.ROLLOUT, Phase.COMPLETE)
+                        Phase.TAKEOFF, Phase.ROLLOUT, Phase.TAXI_IN,
+                        Phase.COMPLETE)
 
     @property
     def airborne(self) -> bool:
@@ -43,7 +45,7 @@ class Phase(str, Enum):
 PHASE_ORDER = [
     Phase.PREFLIGHT, Phase.PUSHBACK, Phase.TAXI, Phase.TAKEOFF, Phase.CLIMB,
     Phase.CRUISE, Phase.DESCENT, Phase.APPROACH, Phase.LANDING, Phase.ROLLOUT,
-    Phase.COMPLETE,
+    Phase.TAXI_IN, Phase.COMPLETE,
 ]
 
 

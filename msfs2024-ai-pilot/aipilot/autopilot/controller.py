@@ -123,6 +123,9 @@ PULL_UP_VS_FPM = -1000.0
 #: How far above the commanded speed counts as an overspeed worth acting on.
 OVERSPEED_MARGIN_KT = 15.0
 
+#: Ground speed at which the landing roll is over and the taxi in begins.
+TAXI_IN_HANDOVER_KT = 25.0
+
 #: Walking pace, for straightening out on the runway.
 LINEUP_SPEED_KT = 5.0
 
@@ -249,6 +252,7 @@ class AIPilot:
         options: Optional[PilotOptions] = None,
         listener: Optional[Callable[[FlightEvent], None]] = None,
         ground: Optional[object] = None,
+        arrival_ground: Optional[object] = None,
     ) -> None:
         self.sim = sim
         self.adapter = adapter
@@ -267,6 +271,8 @@ class AIPilot:
             profile,
         )
         self.ground_network = ground
+        self.arrival_ground = arrival_ground
+        self.arrival_stand = None
         self.taxi: Optional[TaxiGuidance] = None
         self.pushback: Optional[PushbackGuidance] = None
         self.lateral = LateralGuidance(plan, profile.max_bank_deg)
@@ -361,7 +367,7 @@ class AIPilot:
             self._fly_takeoff(state)
         elif self.phase is Phase.PUSHBACK:
             self._fly_pushback(state)
-        elif self.phase is Phase.TAXI:
+        elif self.phase in (Phase.TAXI, Phase.TAXI_IN):
             self._fly_taxi(state)
         elif self.phase is Phase.ROLLOUT:
             self._fly_rollout(state)
@@ -474,8 +480,19 @@ class AIPilot:
             return
 
         if phase is Phase.ROLLOUT:
-            if state.ground_speed_kt <= 30.0:
-                self._enter_phase(Phase.COMPLETE, "clear of the runway speed")
+            if state.ground_speed_kt <= TAXI_IN_HANDOVER_KT:
+                if self._start_taxi_in(state):
+                    self._enter_phase(Phase.TAXI_IN, "vacating and taxiing in")
+                else:
+                    self._enter_phase(Phase.COMPLETE, "clear of the runway speed")
+                    self._finish()
+            return
+
+        if phase is Phase.TAXI_IN:
+            if self.taxi is not None and self.taxi.finished and \
+                    state.ground_speed_kt < 1.0:
+                self.adapter.set_parking_brake(True, state)
+                self._enter_phase(Phase.COMPLETE, "on stand")
                 self._finish()
             return
 
@@ -844,6 +861,43 @@ class AIPilot:
         self.adapter.set_parking_brake(False, state)
         return True
 
+    def _start_taxi_in(self, state: SimState) -> bool:
+        """Route from where the aeroplane stopped to a parking stand.
+
+        Arriving is the other half of the job. Without this the AI Pilot brings
+        an aeroplane down the approach, lands it, and abandons it on the runway
+        -- which is worse than useless at a busy airport.
+        """
+        if not self.options.taxi or self.arrival_ground is None:
+            return False
+        layout = getattr(self.arrival_ground, "layout", None)
+        stands = list(getattr(layout, "parking", ()) or ())
+        if not stands:
+            self._event("No stand data for this airport, so the taxi in is "
+                        "yours. Vacate when ready.", "warning")
+            return False
+
+        # The nearest stand the network can actually reach. Nearest by straight
+        # line is not the same thing: the closest one may be on the other side
+        # of the runway with no route to it.
+        stands.sort(key=lambda stand: distance_nm(state.position, stand.position))
+        for stand in stands[:12]:
+            route = self.arrival_ground.route(state.position, stand.position)
+            if not route:
+                continue
+            route = simplify(route)
+            route.append(stand.position)
+            self.taxi = TaxiGuidance(route)
+            self.arrival_stand = stand
+            distance = self.taxi.distance_remaining_nm(state.position)
+            self._event(f"Vacating and taxiing to {stand.name}: "
+                        f"{distance:.2f} nm.")
+            return True
+
+        self._event("Could not find a way across the taxiways to a stand, so "
+                    "the taxi in is yours.", "warning")
+        return False
+
     def _fly_pushback(self, state: SimState) -> None:
         if self.pushback is None:
             return
@@ -857,7 +911,13 @@ class AIPilot:
             return
         command = self.taxi.update(state)
         if command.finished:
-            self._line_up(state)
+            if self.phase is Phase.TAXI_IN:
+                self.adapter.set_steering(0.0)
+                self.adapter.set_throttle_percent(0.0)
+                self.adapter.set_wheel_brakes(1.0)
+                self.status.message = "on stand"
+            else:
+                self._line_up(state)
             return
         self.status.message = command.reason
         self.adapter.set_steering(command.steering)
@@ -1492,7 +1552,7 @@ class AIPilot:
 
         # Taxi light for taxiing and pushback; off once lined up.
         self.adapter.set_taxi_lights(
-            phase in (Phase.PREFLIGHT, Phase.PUSHBACK, Phase.TAXI)
+            phase in (Phase.PREFLIGHT, Phase.PUSHBACK, Phase.TAXI, Phase.TAXI_IN)
             or (phase is Phase.ROLLOUT and state.ground_speed_kt < 40.0), state)
 
         # Landing lights from lining up until ten thousand feet, and again from
@@ -1507,8 +1567,10 @@ class AIPilot:
         # Seatbelts on from pushback to ten thousand feet, and from top of
         # descent to the gate.
         self.adapter.set_seatbelt_sign(
-            not airborne or below_ten or phase in (Phase.DESCENT, Phase.APPROACH,
-                                                   Phase.LANDING), state)
+            phase is not Phase.COMPLETE
+            and (not airborne or below_ten
+                 or phase in (Phase.DESCENT, Phase.APPROACH, Phase.LANDING)),
+            state)
 
     # -- Reporting -----------------------------------------------------------
     def _finish(self) -> None:
@@ -1516,6 +1578,8 @@ class AIPilot:
         touchdown = ""
         if self._touchdown_vs is not None:
             touchdown = f" Touchdown at {abs(self._touchdown_vs):.0f} fpm."
+        if self.arrival_stand is not None:
+            touchdown += f" Parked at {self.arrival_stand.name}."
         minutes = int(self.elapsed_s // 60)
         self._event(
             f"Flight complete at {self.plan.destination.icao} after "

@@ -47,6 +47,7 @@ class FlightSession:
         self.stop_flag = threading.Event()
         self.error: Optional[str] = None
         self.speed = 1.0
+        self.ground_notes: list[str] = []
 
     # -- Planning ------------------------------------------------------------
     def build_plan(self, request: dict) -> dict:
@@ -140,8 +141,18 @@ class FlightSession:
             manage_lights=bool(request.get("manage_lights", True)),
             go_around_if_unstable=bool(request.get("go_around", True)),
             start_airborne=bool(request.get("airborne")),
+            taxi=bool(request.get("taxi", True)),
         )
-        pilot = AIPilot(sim, adapter, profile, plan, options)
+        ground = arrival_ground = None
+        if options.taxi and self.navdata is not None:
+            from ..cli import _ground_networks
+
+            notes: list[str] = []
+            ground, arrival_ground = _ground_networks(self.navdata, plan,
+                                                      notes.append)
+            self.ground_notes = notes
+        pilot = AIPilot(sim, adapter, profile, plan, options, ground=ground,
+                        arrival_ground=arrival_ground)
 
         with self.lock:
             self.sim = sim
@@ -149,6 +160,8 @@ class FlightSession:
             self.error = None
             self.stop_flag.clear()
         pilot.engage()
+        for note in getattr(self, "ground_notes", []):
+            pilot.log.add(0.0, pilot.phase, note)
         self.thread = threading.Thread(target=self._run, daemon=True, name="aipilot")
         self.thread.start()
         return {"ok": True, "adapter": adapter.describe()}

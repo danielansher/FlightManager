@@ -39,11 +39,21 @@ MAX_JOIN_DISTANCE_NM = 0.14
 MAX_SEGMENT_NM = 0.08
 
 
+#: How much more expensive a runway segment is to route along than a taxiway.
+#: Not forbidden -- an aeroplane has to get onto the runway to depart and off
+#: it to arrive -- but strongly discouraged, so a route never taxis half a mile
+#: down an active runway because it happened to be the shortest way.
+RUNWAY_COST_FACTOR = 8.0
+
+
 @dataclass
 class GroundNode:
     index: int
     position: LatLon
-    edges: list[tuple[int, float]] = field(default_factory=list)
+    #: ``(neighbour, true length, routing cost)``. Length and cost differ so
+    #: that distances reported to the user stay honest while the router is
+    #: still discouraged from using runways as taxiways.
+    edges: list[tuple[int, float, float]] = field(default_factory=list)
 
 
 class GroundNetwork:
@@ -91,11 +101,11 @@ class GroundNetwork:
         self._index[(lat_key, lon_key)] = index
         return index
 
-    def _connect(self, a: int, b: int, length_nm: float) -> None:
+    def _connect(self, a: int, b: int, length_nm: float, cost_nm: float) -> None:
         if a == b:
             return
-        self.nodes[a].edges.append((b, length_nm))
-        self.nodes[b].edges.append((a, length_nm))
+        self.nodes[a].edges.append((b, length_nm, cost_nm))
+        self.nodes[b].edges.append((a, length_nm, cost_nm))
 
     def _add_path(self, path: TaxiPath) -> None:
         total = path.length_nm
@@ -104,12 +114,14 @@ class GroundNetwork:
         # Split long segments so a route can join partway along one.
         pieces = max(1, int(math.ceil(total / MAX_SEGMENT_NM)))
         course = initial_bearing_deg(path.start, path.end)
+        factor = RUNWAY_COST_FACTOR if "runway" in path.kind.lower() else 1.0
         previous = self._node(path.start)
         for step in range(1, pieces + 1):
             point = (path.end if step == pieces
                      else destination_point(path.start, course, total * step / pieces))
             current = self._node(point)
-            self._connect(previous, current, total / pieces)
+            self._connect(previous, current, total / pieces,
+                          total / pieces * factor)
             previous = current
 
     @property
@@ -149,8 +161,8 @@ class GroundNetwork:
             if current in closed:
                 continue
             closed.add(current)
-            for neighbour, length in self.nodes[current].edges:
-                cost = best_cost[current] + length
+            for neighbour, _length, weight in self.nodes[current].edges:
+                cost = best_cost[current] + weight
                 if cost >= best_cost.get(neighbour, float("inf")):
                     continue
                 best_cost[neighbour] = cost

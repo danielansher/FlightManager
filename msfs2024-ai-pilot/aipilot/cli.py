@@ -274,17 +274,9 @@ def command_fly(args) -> int:
         return 1
 
     adapter, _ = build_adapter(key, sim)
-    ground = None
+    ground = arrival_ground = None
     if not args.no_taxi:
-        from .route.taxi import build_network
-
-        ground = build_network(navdata.ground_layout(plan.origin.icao))
-        if ground is None:
-            print("No taxiway data for " + plan.origin.icao
-                  + "; taxi out and line up yourself and it will take over.")
-        else:
-            print(f"Taxiway network for {plan.origin.icao}: "
-                  f"{len(ground.nodes)} junctions.")
+        ground, arrival_ground = _ground_networks(navdata, plan, print)
     options = PilotOptions(
         autoland=args.autoland,
         manage_configuration=not args.no_config,
@@ -295,7 +287,8 @@ def command_fly(args) -> int:
     )
     printer = _Printer(quiet=args.quiet)
     pilot = AIPilot(sim, adapter, profile, plan, options,
-                    listener=printer.on_event, ground=ground)
+                    listener=printer.on_event, ground=ground,
+                    arrival_ground=arrival_ground)
 
     if args.sim == "msfs":
         if not _wait_for_data(sim):
@@ -328,6 +321,28 @@ def command_fly(args) -> int:
         navdata.close()
     printer.finish()
     return 0
+
+
+def _ground_networks(navdata, plan, report):
+    """Taxiway networks for both ends, so the taxi happens without being asked.
+
+    Both, because arriving is half the job: an AI Pilot that lands and then
+    abandons the aeroplane on the runway has not finished.
+    """
+    from .route.taxi import build_network
+
+    networks = []
+    for airport, role in ((plan.origin, "departure"), (plan.destination, "arrival")):
+        network = build_network(navdata.ground_layout(airport.icao))
+        if network is None:
+            report(f"No taxiway data for {airport.icao}, so the {role} taxi is "
+                   "yours. Everything else still runs.")
+        else:
+            stands = len(getattr(network.layout, "parking", ()) or ())
+            report(f"{airport.icao}: {len(network.nodes)} taxiway junctions, "
+                   f"{stands} stands.")
+        networks.append(network)
+    return networks[0], networks[1]
 
 
 class _Printer:
