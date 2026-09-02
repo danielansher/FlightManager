@@ -29,6 +29,9 @@ class NavDataSources:
     runways_csv: Optional[str] = None
     search_dirs: Sequence[str] = ()
     use_bundled: bool = True
+    #: "2020" or "2024". Only matters when both simulators' Little Navmap
+    #: databases are present, which is common enough to be worth handling.
+    msfs_version: Optional[str] = None
 
 
 def _find(name: str, extra_dirs: Sequence[str]) -> Optional[str]:
@@ -45,7 +48,8 @@ def build_navdata(sources: Optional[NavDataSources] = None) -> ChainedNavData:
     sources = sources or NavDataSources()
     providers: list[NavDataProvider] = []
 
-    lnm_paths = [sources.littlenavmap_db] if sources.littlenavmap_db else default_database_paths()
+    lnm_paths = ([sources.littlenavmap_db] if sources.littlenavmap_db
+                 else default_database_paths(sources.msfs_version))
     for path in lnm_paths:
         if path and os.path.isfile(path):
             providers.append(LittleNavmapProvider(path))

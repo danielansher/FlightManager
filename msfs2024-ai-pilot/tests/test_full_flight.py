@@ -330,3 +330,115 @@ def test_lights_are_not_re_commanded_every_cycle(navdata):
                     if "LIGHTS" in e or e.startswith("STROBES")]
     assert light_events, "the lights were never touched at all"
     assert len(light_events) < 20, f"{len(light_events)} light commands sent"
+
+
+def test_the_autopilot_is_put_back_when_the_aeroplane_drops_it(navdata):
+    """The complaint that started this: it engages, then quietly stops flying.
+
+    A jittery joystick axis reads as a control input and disconnects the
+    autopilot, with nothing to say it happened. Simulated here by knocking the
+    autopilot out at intervals and checking the aeroplane still arrives.
+    """
+    from aipilot.aircraft.registry import build_adapter
+    from aipilot.autopilot.controller import AIPilot
+    from aipilot.route.planner import plan_route
+    from aipilot.sim.mock import MockAircraftModel, MockSim
+
+    profile = get_profile("b787-10")
+    origin, destination = navdata.airport("EGLL"), navdata.airport("EGCC")
+    plan = plan_route(origin, destination, profile, navdata)
+    runway = plan.departure_runway
+    sim = MockSim(runway.threshold, runway.heading_true_deg, origin.elevation_ft,
+                  model=MockAircraftModel(max_climb_fpm=profile.max_climb_rate_fpm))
+    adapter, _ = build_adapter("b787-10", sim)
+    pilot = AIPilot(sim, adapter, profile, plan)
+    pilot.engage()
+
+    knocked_out = 0
+    for step in range(int(4 * 3600 / 2)):
+        # Every two minutes, something outside the aeroplane drops the autopilot.
+        if step and step % 60 == 0 and not sim.state.on_ground and sim.state.ap_master:
+            sim.state.ap_master = False
+            knocked_out += 1
+        pilot.update(2.0)
+        if pilot.phase in (Phase.COMPLETE, Phase.ABORTED):
+            break
+
+    assert knocked_out > 3, "the test did not actually disconnect anything"
+    assert pilot.phase is Phase.COMPLETE, "did not survive the disconnects"
+    assert pilot._ap_disconnects >= knocked_out - 1
+    assert distance_nm(sim.state.position, plan.threshold_position) < 3.0
+    messages = [e.message.lower() for e in pilot.log]
+    assert any("dropped the autopilot" in m for m in messages)
+    assert any("jitter" in m for m in messages), \
+        "repeated disconnects should be diagnosed, not silently papered over"
+
+
+def test_a_single_disconnect_is_not_over_reported(navdata):
+    """One re-engagement is worth a line. It is not worth a diagnosis."""
+    from aipilot.aircraft.registry import build_adapter
+    from aipilot.autopilot.controller import AIPilot
+    from aipilot.route.planner import plan_route
+    from aipilot.sim.mock import MockAircraftModel, MockSim
+
+    profile = get_profile("b787-10")
+    origin, destination = navdata.airport("EGLL"), navdata.airport("EGCC")
+    plan = plan_route(origin, destination, profile, navdata)
+    runway = plan.departure_runway
+    sim = MockSim(runway.threshold, runway.heading_true_deg, origin.elevation_ft,
+                  model=MockAircraftModel(max_climb_fpm=profile.max_climb_rate_fpm))
+    adapter, _ = build_adapter("b787-10", sim)
+    pilot = AIPilot(sim, adapter, profile, plan)
+    pilot.engage()
+    dropped = False
+    for _ in range(int(4 * 3600 / 2)):
+        if not dropped and pilot.phase is Phase.CRUISE and sim.state.ap_master:
+            sim.state.ap_master = False
+            dropped = True
+        pilot.update(2.0)
+        if pilot.phase in (Phase.COMPLETE, Phase.ABORTED):
+            break
+    assert dropped and pilot.phase is Phase.COMPLETE
+    assert pilot._ap_disconnects == 1
+    assert not any("jitter" in e.message.lower() for e in pilot.log)
+
+
+def test_a_boeing_recovers_from_a_go_around(navdata):
+    """Regression: the Boeing adapter overrode altitude mode selection without
+    delegating, so after any commanded vertical speed it could never return to
+    altitude capture. A go-around then sat at five hundred feet with full
+    thrust and a three thousand foot target it could not climb to."""
+    from aipilot.aircraft.registry import build_adapter
+    from aipilot.autopilot.controller import AIPilot
+    from aipilot.route.planner import plan_route
+    from aipilot.sim.mock import MockAircraftModel, MockSim
+
+    profile = get_profile("b787-10")
+    origin, destination = navdata.airport("EGLL"), navdata.airport("EGCC")
+    plan = plan_route(origin, destination, profile, navdata, arrival_runway="23R")
+    runway = plan.departure_runway
+    model = MockAircraftModel(max_climb_fpm=profile.max_climb_rate_fpm,
+                              decel_kt_s=0.05, flap_transit_s=90.0,
+                              gear_transit_s=60.0)
+    sim = MockSim(runway.threshold, runway.heading_true_deg, origin.elevation_ft,
+                  model=model)
+    adapter, _ = build_adapter("b787-10", sim)
+    pilot = AIPilot(sim, adapter, profile, plan,
+                    PilotOptions(go_around_if_unstable=True, max_go_arounds=1))
+    pilot.engage()
+    for _ in range(int(6 * 3600 / 2)):
+        pilot.update(2.0)
+        if pilot.phase in (Phase.COMPLETE, Phase.ABORTED):
+            break
+    assert pilot._go_arounds >= 1
+    assert pilot.phase is Phase.COMPLETE, \
+        f"stuck in {pilot.phase.value} at {sim.state.altitude_ft:.0f} ft"
+
+
+def test_the_level_change_command_is_not_spammed(navdata):
+    """It was sent every control cycle -- ten thousand times a flight -- which
+    re-commands a mode change the aeroplane is still executing."""
+    result = fly_flight(navdata, "EGLL", "EGCC", "b787-10")
+    flch = [e for e, _ in result.sim.events_sent if e == "FLIGHT_LEVEL_CHANGE_ON"]
+    assert flch, "a Boeing should be given level changes at all"
+    assert len(flch) < 30, f"sent {len(flch)} level-change commands"

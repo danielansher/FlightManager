@@ -61,6 +61,7 @@ def _check_navdata(args) -> int:
         littlenavmap_db=getattr(args, "navdata", None),
         airports_csv=getattr(args, "airports_csv", None),
         runways_csv=getattr(args, "runways_csv", None),
+        msfs_version=getattr(args, "msfs", None),
     ))
     if not navdata.available:
         print(f"{FAIL} No navigation data found at all.")
@@ -119,7 +120,7 @@ def _check_simconnect() -> int:
     except SimBackendError as exc:
         print(f"{FAIL} {exc}")
         return 1
-    print(f"{TICK} Connected to the simulator")
+    print(f"{TICK} Connected to {backend.host_description}")
 
     problems = 0
     state = None

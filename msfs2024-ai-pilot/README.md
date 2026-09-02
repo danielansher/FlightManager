@@ -1,11 +1,19 @@
-# AI Pilot for Microsoft Flight Simulator 2024
+# AI Pilot for Microsoft Flight Simulator
 
-MSFS 2020's default A320 had an **AI Pilot** button. You typed a departure and a
-destination, pressed it, and the aeroplane flew itself there. MSFS 2024 dropped
-it, and nothing equivalent shipped in its place.
+**Works on MSFS 2020 and MSFS 2024.**
+
+MSFS 2020 had an **AI Pilot** button. You typed a departure and a destination,
+pressed it, and the aeroplane flew itself there. MSFS 2024 dropped it, and
+nothing equivalent shipped in its place — and in MSFS 2020 it is unreliable on
+most airliners, the default 787 especially.
 
 This is that button, rebuilt — as a small program that flies the aeroplane you
 already own, through SimConnect, rather than as a modification to any aircraft.
+
+**Flying MSFS 2020?** Read [docs/MSFS2020.md](docs/MSFS2020.md) first. It covers
+why the built-in AI Pilot behaves the way it does, three settings on your machine
+that cause most of it and cost nothing to fix, and what this does differently on
+the default 787.
 
 ```
 python -m aipilot fly EGLL KJFK --aircraft b787-10
@@ -25,7 +33,7 @@ Nothing is installed into the simulator and no aircraft file is modified.
 
 | Key | Aircraft | How it is flown |
 |---|---|---|
-| `b787-10`, `b787-9` | Boeing 787-10 / 787-9 | Standard SimConnect events. Nothing extra needed. |
+| `b787-10`, `b787-9` | Boeing 787-10 / 787-9 (default and Horizon) | Standard SimConnect events. Nothing extra needed. |
 | `a350-900`, `a350-1000` | iniBuilds A350 | Standard events. See [docs/AIRCRAFT.md](docs/AIRCRAFT.md). |
 | `a380-800` | Airbus A380-800 | Standard events. |
 | `a330-900` | Headwind A330-900neo | FlyByWire-convention FCU, via the WASM bridge. |
@@ -55,8 +63,18 @@ python -m aipilot fly EGLL EGCC --sim mock --speed 200
 python -m aipilot doctor
 
 # Fly for real, with the simulator running and an aeroplane on a runway:
-python -m aipilot fly EGLL LFPG --aircraft b787-10
+python -m aipilot fly EGLL LFPG --aircraft b787-10 --msfs 2020
 ```
+
+On Windows there are double-clickable versions in `windows\`, so none of this
+has to be typed:
+
+| | |
+|---|---|
+| `Check-My-Setup.bat` | checks everything and says what is missing |
+| `Try-It-Offline.bat` | flies a whole flight with no simulator involved |
+| `Fly.bat` | asks where to, then flies there |
+| `AI-Pilot-Panel.bat` | opens the control panel in your browser |
 
 There is also a control panel in the browser, which is the closer analogue of
 the original button:
@@ -111,7 +129,17 @@ two hundred feet, stable and configured, and tells you so.
 --cruise 350                  # force a flight level
 --wind 250/45                 # plan against a wind
 --airborne                    # engage with the aeroplane already flying
+--msfs 2020                   # which sim, when you have both installed
 ```
+
+## If the autopilot keeps dropping out
+
+It watches for that and puts it back, which is the difference between an
+aeroplane that quietly stops flying and one that keeps going. If it keeps
+happening it stops papering over it and tells you what to look at — almost
+always a joystick axis with a little jitter on it, a control bound twice, or the
+simulator's own AI piloting assistance switched on and fighting for the
+aeroplane. [docs/MSFS2020.md](docs/MSFS2020.md) has the details.
 
 ## Navigation data
 

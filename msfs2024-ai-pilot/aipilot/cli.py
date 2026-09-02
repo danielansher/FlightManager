@@ -47,6 +47,9 @@ def build_parser() -> argparse.ArgumentParser:
                          help="cruise altitude in feet, or a flight level under 500")
         sub.add_argument("--route", help='enroute fixes, e.g. "MID DVR KONAN"')
         sub.add_argument("--wind", help="planning wind as DIR/SPEED, e.g. 250/35")
+        sub.add_argument("--msfs", choices=("2020", "2024"), default=None,
+                         help="which simulator you are flying, when both are "
+                              "installed; decides which Little Navmap database to use")
         sub.add_argument("--navdata", help="path to a Little Navmap sqlite database")
         sub.add_argument("--airports-csv", help="path to an OurAirports airports.csv")
         sub.add_argument("--runways-csv", help="path to an OurAirports runways.csv")
@@ -82,6 +85,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor = subparsers.add_parser(
         "doctor", help="check the simulator connection, the WASM bridge and the nav data")
+    doctor.add_argument("--msfs", choices=("2020", "2024"), default=None,
+                        help="which simulator to check the navigation data for")
     doctor.add_argument("--navdata", help="path to a Little Navmap sqlite database")
     doctor.add_argument("--airports-csv", help="path to an OurAirports airports.csv")
     doctor.add_argument("--runways-csv", help="path to an OurAirports runways.csv")
@@ -117,6 +122,7 @@ def _navdata_from_args(args) -> NavDataProvider:
         littlenavmap_db=getattr(args, "navdata", None),
         airports_csv=getattr(args, "airports_csv", None),
         runways_csv=getattr(args, "runways_csv", None),
+        msfs_version=getattr(args, "msfs", None),
     ))
 
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 import ctypes
 import os
 import platform
+import re
 import struct
 from ctypes import (
     POINTER,
@@ -60,6 +61,12 @@ RECV_ID_EVENT = 4
 RECV_ID_SIMOBJECT_DATA = 8
 RECV_ID_SIMOBJECT_DATA_BYTYPE = 9
 RECV_ID_CLIENT_DATA = 16
+
+# SIMCONNECT_RECV_OPEN: 12 bytes of SIMCONNECT_RECV, then a 256-byte
+# application name, then the version and build numbers as DWORDs.
+OPEN_NAME_OFFSET = 12
+OPEN_NAME_LENGTH = 256
+OPEN_VERSION_OFFSET = OPEN_NAME_OFFSET + OPEN_NAME_LENGTH
 
 # SIMCONNECT_RECV_SIMOBJECT_DATA: 12 bytes of SIMCONNECT_RECV, then seven
 # DWORDs, so the payload starts here. SIMCONNECT_RECV_CLIENT_DATA derives from
@@ -144,28 +151,81 @@ FLIGHT_STATE_VARS: tuple[VarSpec, ...] = (
     VarSpec("sim_time_s", "ABSOLUTE TIME", "seconds"),
 )
 
-#: Where SimConnect.dll usually lives. ``AIPILOT_SIMCONNECT_DLL`` overrides.
+#: Where SimConnect.dll usually lives, for both simulators. The SDK copies are
+#: listed first because they are the ones that are definitely a real, complete
+#: SimConnect. ``AIPILOT_SIMCONNECT_DLL`` overrides all of this.
 DEFAULT_DLL_LOCATIONS = (
+    # MSFS 2024 SDK, MSFS 2020 SDK.
     r"C:\MSFS 2024 SDK\SimConnect SDK\lib\SimConnect.dll",
     r"C:\MSFS SDK\SimConnect SDK\lib\SimConnect.dll",
+    # Simulator installs.
     r"C:\Program Files\Microsoft Flight Simulator 2024\SimConnect.dll",
+    r"C:\Program Files\Microsoft Flight Simulator\SimConnect.dll",
     r"C:\Program Files (x86)\Microsoft Flight Simulator\SimConnect.dll",
+    # Steam, in the default library.
+    r"C:\Program Files (x86)\Steam\steamapps\common\MicrosoftFlightSimulator\SimConnect.dll",
+    r"C:\Program Files (x86)\Steam\steamapps\common\Microsoft Flight Simulator 2024\SimConnect.dll",
+)
+
+#: Patterns searched under every Steam library and drive root, for the very
+#: common cases of a Steam library on another drive or a non-default SDK path.
+DLL_SEARCH_PATTERNS = (
+    r"steamapps\common\MicrosoftFlightSimulator\SimConnect.dll",
+    r"steamapps\common\Microsoft Flight Simulator 2024\SimConnect.dll",
+    r"MSFS SDK\SimConnect SDK\lib\SimConnect.dll",
+    r"MSFS 2024 SDK\SimConnect SDK\lib\SimConnect.dll",
 )
 
 
+def _steam_libraries() -> list[str]:
+    """Steam library roots, read from Steam's own library folder manifest."""
+    roots = []
+    for base in (r"C:\Program Files (x86)\Steam", r"C:\Steam",
+                 os.path.expandvars(r"%ProgramFiles(x86)%\Steam")):
+        manifest = os.path.join(base, "steamapps", "libraryfolders.vdf")
+        if not os.path.isfile(manifest):
+            continue
+        try:
+            with open(manifest, "r", encoding="utf-8", errors="replace") as handle:
+                text = handle.read()
+        except OSError:
+            continue
+        # The manifest is Valve's own key-value format; the only thing wanted
+        # from it is the quoted "path" values, which a regex gets without
+        # taking on a parser for a format that is not ours.
+        for match in re.finditer(r'"path"\s*"([^"]+)"', text):
+            roots.append(match.group(1).replace("\\\\", "\\"))
+    return roots
+
+
 def find_simconnect_dll() -> Optional[str]:
-    """Locate SimConnect.dll, preferring an explicit override."""
+    """Locate SimConnect.dll, for either simulator.
+
+    Order: an explicit override, then a copy dropped next to this package
+    (the friendliest thing to tell someone to do), then the known install
+    locations, then a shallow search of Steam libraries and drive roots.
+    """
     override = os.environ.get("AIPILOT_SIMCONNECT_DLL")
     if override:
         return override if os.path.isfile(override) else None
-    # Next to this package is the friendliest place for a user to drop it.
+
     local = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                          "SimConnect.dll")
     if os.path.isfile(local):
         return local
+
     for candidate in DEFAULT_DLL_LOCATIONS:
         if os.path.isfile(candidate):
             return candidate
+
+    roots = _steam_libraries() + [f"{letter}:\\" for letter in "CDEFGH"]
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        for pattern in DLL_SEARCH_PATTERNS:
+            candidate = os.path.join(root, pattern)
+            if os.path.isfile(candidate):
+                return candidate
     return None
 
 
@@ -188,6 +248,8 @@ class SimConnectBackend(SimBackend):
         self._on_exception = on_exception
         self._exceptions: list[int] = []
         self._received_any = False
+        self.host_name = ""
+        self.host_version: Optional[tuple[int, int, int, int]] = None
         self.lvar_bridge = None  # set by attach_lvar_bridge()
 
     # -- Lifecycle -----------------------------------------------------------
@@ -326,6 +388,8 @@ class SimConnectBackend(SimBackend):
             self._exceptions.append(code)
             if self._on_exception:
                 self._on_exception(code)
+        elif recv_id == RECV_ID_OPEN:
+            self._read_open(data, size)
         elif recv_id == RECV_ID_QUIT:
             self._state.connected = False
 
@@ -350,6 +414,35 @@ class SimConnectBackend(SimBackend):
                 setattr(state, spec.field, value)
         state.connected = True
         self._received_any = True
+
+    def _read_open(self, data: c_void_p, size: int) -> None:
+        """Record who answered: the simulator's name and version."""
+        needed = OPEN_VERSION_OFFSET + 16
+        if size < OPEN_NAME_OFFSET + OPEN_NAME_LENGTH:
+            return
+        raw = ctypes.string_at(data, min(size, needed))
+        name = raw[OPEN_NAME_OFFSET:OPEN_NAME_OFFSET + OPEN_NAME_LENGTH]
+        self.host_name = name.split(b"\0", 1)[0].decode("ascii", "replace").strip()
+        if size >= needed:
+            major, minor, build_major, build_minor = struct.unpack(
+                "<4I", raw[OPEN_VERSION_OFFSET:OPEN_VERSION_OFFSET + 16]
+            )
+            self.host_version = (major, minor, build_major, build_minor)
+
+    @property
+    def host_description(self) -> str:
+        """What the simulator called itself when the connection opened.
+
+        Useful mostly for the diagnostics: it confirms which simulator actually
+        answered, which matters on a machine with both installed, and it is the
+        only thing in the whole connection that says so.
+        """
+        if not self.host_name:
+            return "unknown (the simulator did not identify itself)"
+        if self.host_version is None:
+            return self.host_name
+        major, minor, build_major, build_minor = self.host_version
+        return f"{self.host_name} {major}.{minor}.{build_major}.{build_minor}"
 
     @property
     def receiving_data(self) -> bool:

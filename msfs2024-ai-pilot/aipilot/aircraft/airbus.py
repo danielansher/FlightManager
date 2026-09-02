@@ -164,9 +164,16 @@ class BoeingAdapter(AircraftAdapter):
     """Boeing MCP adapter.
 
     A Boeing MCP holds what it is given, which is exactly the standard-event
-    model, so this adds only the things the stock events get wrong on a 787:
-    altitude changes want an explicit level-change command rather than relying
-    on the sim's altitude-hold capture.
+    model, so this adds only one thing: a level change is commanded explicitly
+    when a new altitude is selected, which is what a crew does on the MCP.
+
+    That command is sent *once per new altitude*, and this is the whole point
+    of the class. An earlier version sent it unconditionally on every control
+    cycle -- four times a second for the length of a flight, some ten thousand
+    times -- which continually re-commands a mode change the aeroplane is in
+    the middle of executing. On the default 787 that is a plausible cause of
+    the well-known complaint that its autopilot engages and then quietly stops
+    flying: the aeroplane is being interrupted faster than it can capture.
     """
 
     key = "boeing"
@@ -174,10 +181,19 @@ class BoeingAdapter(AircraftAdapter):
     def describe(self) -> str:
         return f"{self.profile.name} via Boeing MCP (standard SimConnect events)"
 
+    def set_altitude(self, altitude_ft: float) -> None:
+        before = self._last_altitude
+        super().set_altitude(altitude_ft)
+        if self._last_altitude != before:
+            self._level_change_pending = True
+
     def select_altitude_mode(self, state: SimState) -> None:
-        # FLCH is the mode a Boeing crew uses for a commanded level change; the
-        # stock event maps onto it and lets the aeroplane manage the pitch and
-        # thrust split itself.
-        if not state.ap_altitude_lock:
-            self.sim.send_event("AP_ALT_HOLD_ON")
-        self.sim.send_event("FLIGHT_LEVEL_CHANGE_ON", 1)
+        # Delegate, so the vertical-speed mode handling in the base class
+        # applies here too. Overriding it outright is what previously left a
+        # Boeing unable to return to altitude capture after any commanded
+        # rate: a go-around then sat at five hundred feet with full thrust and
+        # a three thousand foot target it could not climb to.
+        super().select_altitude_mode(state)
+        if self._level_change_pending:
+            self._level_change_pending = False
+            self.sim.send_event("FLIGHT_LEVEL_CHANGE_ON", 1)

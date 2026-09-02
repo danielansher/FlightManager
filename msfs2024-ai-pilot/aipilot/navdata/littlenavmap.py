@@ -29,14 +29,31 @@ from typing import Optional
 from ..geo import LatLon, normalize_deg
 from .base import Airport, NavDataProvider, Runway, Waypoint
 
+#: Little Navmap's database file names, newest simulator first.
 DEFAULT_DB_NAMES = (
     "little_navmap_msfs24.sqlite",
-    "little_navmap_msfs.sqlite",
     "little_navmap_msfs_2024.sqlite",
+    "little_navmap_msfs.sqlite",
 )
 
+#: Which of those belong to which simulator. Someone with both installed has
+#: both files, and flying 2020 against the 2024 database means approaches built
+#: to runways that moved between the two.
+DB_NAMES_BY_SIM = {
+    "2024": ("little_navmap_msfs24.sqlite", "little_navmap_msfs_2024.sqlite"),
+    "2020": ("little_navmap_msfs.sqlite",),
+}
 
-def default_database_paths() -> list[str]:
+
+def database_names_for(msfs_version: Optional[str] = None) -> tuple[str, ...]:
+    """Database names to try, with the chosen simulator's first."""
+    if not msfs_version:
+        return DEFAULT_DB_NAMES
+    preferred = DB_NAMES_BY_SIM.get(str(msfs_version), ())
+    return preferred + tuple(n for n in DEFAULT_DB_NAMES if n not in preferred)
+
+
+def default_database_paths(msfs_version: Optional[str] = None) -> list[str]:
     """Every place a Little Navmap scenery database is likely to be."""
     roots = []
     appdata = os.environ.get("APPDATA")
@@ -47,7 +64,7 @@ def default_database_paths() -> list[str]:
     roots.append(os.path.join(home, "AppData", "Roaming", "ABarthel", "little_navmap_db"))
     found = []
     for root in roots:
-        for name in DEFAULT_DB_NAMES:
+        for name in database_names_for(msfs_version):
             candidate = os.path.join(root, name)
             if os.path.isfile(candidate):
                 found.append(candidate)

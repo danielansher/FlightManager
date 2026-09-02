@@ -84,6 +84,8 @@ class AircraftAdapter:
         self._autothrottle_on = False
         self._toga = False
         self._vs_mode = False
+        self._level_change_pending = False
+        self._announced_engage = False
         self._switches: dict[str, bool] = {}
 
     # -- Introspection -------------------------------------------------------
@@ -98,9 +100,18 @@ class AircraftAdapter:
 
     # -- Autoflight ----------------------------------------------------------
     def engage_autopilot(self, state: SimState) -> None:
+        """Engage the autopilot if it is not already in.
+
+        Announced only the first time. This is called every control cycle, and
+        an aeroplane that keeps dropping the autopilot would otherwise fill the
+        log with "Autopilot engaged" instead of saying the useful thing, which
+        is that it keeps being lost. The controller's watchdog says that.
+        """
         if not state.ap_master:
             self.sim.send_event("AP_MASTER")
-            self.log("Autopilot engaged")
+            if not self._announced_engage:
+                self._announced_engage = True
+                self.log("Autopilot engaged")
 
     def disengage_autopilot(self, state: SimState) -> None:
         if state.ap_master:

@@ -38,9 +38,15 @@ from .lateral import LateralGuidance
 from .phases import EventLog, FlightEvent, Phase, phase_rank
 from .vertical import VerticalGuidance, should_start_descent
 
-#: Height at which the autopilot is engaged after takeoff. Below this the
-#: aeroplane is flown by the flight director on runway heading.
+#: Fallback height at which the autopilot is engaged after takeoff, for a type
+#: whose profile does not say. Below this the aeroplane is flown on runway
+#: heading. Per-type values live in ``AircraftProfile.min_ap_engage_agl_ft``,
+#: because some aeroplanes will not hold an autopilot engagement this low.
 AP_ENGAGE_AGL_FT = 400.0
+
+#: How many uncommanded autopilot disconnects before the AI Pilot stops simply
+#: putting it back and explains what is probably causing them.
+AP_DISCONNECT_DIAGNOSIS_AT = 3
 
 #: Gear up once safely airborne and climbing.
 GEAR_UP_AGL_FT = 200.0
@@ -151,6 +157,7 @@ class PilotStatus:
     gear_down: bool = False
     autoland: bool = False
     go_arounds: int = 0
+    ap_disconnects: int = 0
 
     @property
     def eta_text(self) -> str:
@@ -197,6 +204,8 @@ class AIPilot:
         self.status = PilotStatus(top_of_descent_nm=self.vertical_profile.top_of_descent_nm)
         self.elapsed_s = 0.0
         self._go_arounds = 0
+        self._ap_disconnects = 0
+        self._ap_ever_engaged = False
         self._autoland_active = False
         self._handed_over = False
         self._nav_tuned = False
@@ -254,6 +263,7 @@ class AIPilot:
         distance_to_go = self._distance_to_threshold_nm(state)
 
         self._update_phase(state, distance_to_go)
+        self._watch_autopilot(state)
 
         lateral_command = None
         vertical_command = None
@@ -465,7 +475,7 @@ class AIPilot:
         if runway is not None:
             self.adapter.set_heading_true(runway.heading_true_deg, state)
         self.adapter.set_speed_kt(self.profile.initial_climb_speed_kt)
-        if state.altitude_agl_ft >= AP_ENGAGE_AGL_FT and not state.ap_master:
+        if state.altitude_agl_ft >= self._ap_engage_agl and not state.ap_master:
             self.adapter.engage_autopilot(state)
             self.adapter.select_heading_mode(state)
             self.adapter.set_altitude(self.plan.cruise_altitude_ft)
@@ -582,6 +592,59 @@ class AIPilot:
             self.adapter.disengage_autopilot(state)
         if state.ground_speed_kt > 30.0:
             self.adapter.apply_brakes()
+
+    # -- Keeping hold of the autopilot ---------------------------------------
+    @property
+    def _ap_engage_agl(self) -> float:
+        return self.profile.min_ap_engage_agl_ft or AP_ENGAGE_AGL_FT
+
+    def _watch_autopilot(self, state: SimState) -> None:
+        """Notice when the aeroplane drops the autopilot, and put it back.
+
+        The commonest complaint about the simulator's own AI pilot is that it
+        engages and then quietly stops flying, leaving the aeroplane to drift
+        off while everything still looks normal. The cause is usually not in
+        the aeroplane at all: a joystick or rudder axis with a little jitter on
+        it reads as a control input and disconnects the autopilot, and nothing
+        announces that it has happened.
+
+        So rather than assume the engagement holds, this checks every cycle. A
+        one-off is put back silently enough not to be noise. A pattern of them
+        is a configuration problem the user has to fix, and no amount of
+        re-engaging will help, so at that point it says what to go and look at
+        instead of quietly fighting it for the rest of the flight.
+        """
+        if not self.phase.airborne or self._handed_over:
+            return
+        if state.altitude_agl_ft < self._ap_engage_agl:
+            return
+        if state.ap_master:
+            self._ap_ever_engaged = True
+            return
+        if not self._ap_ever_engaged:
+            return            # not yet engaged for the first time; takeoff owns that
+
+        self._ap_disconnects += 1
+        self.adapter.engage_autopilot(state)
+        # A disconnect drops the lateral and vertical modes with it.
+        self.adapter.select_heading_mode(state)
+
+        if self._ap_disconnects == 1:
+            self._event("The aeroplane dropped the autopilot on its own -- "
+                        "re-engaging.", "warning")
+        elif self._ap_disconnects == AP_DISCONNECT_DIAGNOSIS_AT:
+            self._event(
+                f"The autopilot has now disconnected by itself "
+                f"{self._ap_disconnects} times. That is almost always "
+                "something outside the aeroplane. In order of likelihood: a "
+                "joystick, rudder or trim axis with a little jitter on it, "
+                "which reads as a control input (give it a small dead zone); a "
+                "control bound twice, or an autopilot toggle bound to a switch "
+                "that is being held; or the simulator's own AI piloting "
+                "assistance switched on and fighting for the aeroplane. "
+                "See docs/MSFS2020.md.",
+                "warning",
+            )
 
     # -- Approach management -------------------------------------------------
     def _tune_arrival_ils(self, state: SimState) -> None:
@@ -865,6 +928,7 @@ class AIPilot:
         status.time_enroute_s = self.elapsed_s
         status.autoland = self._autoland_active
         status.go_arounds = self._go_arounds
+        status.ap_disconnects = self._ap_disconnects
         status.active_index = self.lateral.active_index
         status.active_waypoint = self.lateral.active_leg.ident
         status.distance_to_destination_nm = (

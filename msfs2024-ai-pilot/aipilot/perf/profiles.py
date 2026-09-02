@@ -60,6 +60,10 @@ class AircraftProfile:
     max_descent_rate_fpm: float = 3000.0
     max_bank_deg: float = 25.0
     approach_bank_deg: float = 20.0
+    #: Lowest height above the field at which this type will reliably hold an
+    #: autopilot engagement. Real procedure is "not below 400 ft, normally
+    #: 1000"; some simulator aircraft will not hold it at 400 at all.
+    min_ap_engage_agl_ft: float = 1000.0
 
     # Configuration
     takeoff_flaps_index: int = 1
