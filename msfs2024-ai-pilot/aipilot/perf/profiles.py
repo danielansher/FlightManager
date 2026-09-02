@@ -309,6 +309,11 @@ def select_cruise_altitude(distance_nm: float, course_deg: float,
         target = profile.typical_cruise_ft
     target = min(target, profile.max_altitude_ft - 1000.0)
 
+    # The semicircular rule is defined on the *magnetic* track, not the true
+    # one. Where the variation is meaningful -- most of North America, and the
+    # high latitudes -- a route whose true course sits within one variation of
+    # north or south gets the wrong hemisphere's levels, which is to say the
+    # thousand feet that opposite-direction traffic is using.
     eastbound = 0.0 <= (course_deg % 360.0) < 180.0
     # Above FL410 the semicircular rule reverts to 2000 ft steps; we stay below.
     thousands = int(round(target / 1000.0))

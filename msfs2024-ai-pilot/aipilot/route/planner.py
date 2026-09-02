@@ -41,6 +41,17 @@ from .profile import FAF_DISTANCE_NM
 MIN_RUNWAY_FT = 6000.0
 
 
+def magnetic_course(true_course_deg: float, origin: Airport) -> float:
+    """A true course as the magnetic one the semicircular rule is defined on.
+
+    Cruise levels alternate by direction of flight, and the direction the rule
+    means is magnetic. Feeding it a true course puts any route within one
+    local variation of north or south into the wrong half of the rule -- which
+    is the thousand feet opposite-direction traffic is using.
+    """
+    return normalize_deg(true_course_deg - origin.magvar_deg)
+
+
 @dataclass(frozen=True)
 class AirportWind:
     """A wind at one airport, and where the figure came from.
@@ -349,12 +360,13 @@ def plan_route(
     direct_distance = distance_nm(origin.position, destination.position)
     requested_cruise = cruise_altitude_ft
     if cruise_altitude_ft is None:
-        cruise_altitude_ft = select_cruise_altitude(direct_distance, direct_course, profile)
+        cruise_altitude_ft = select_cruise_altitude(
+            direct_distance, magnetic_course(direct_course, origin), profile)
     cruise_altitude_ft = _reachable_cruise(
         cruise_altitude_ft, origin, destination, direct_distance
     )
     if requested_cruise is None and cruise_altitude_ft < select_cruise_altitude(
-            direct_distance, direct_course, profile):
+            direct_distance, magnetic_course(direct_course, origin), profile):
         warnings.append(
             f"{direct_distance:.0f} nm is too short to climb high and get back "
             f"down again, so the cruise level was capped at "

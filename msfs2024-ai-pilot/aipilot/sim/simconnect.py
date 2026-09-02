@@ -19,6 +19,7 @@ import ctypes
 import os
 import platform
 import re
+import time
 import struct
 from ctypes import (
     POINTER,
@@ -264,6 +265,9 @@ class SimConnectBackend(SimBackend):
         self._on_exception = on_exception
         self._exceptions: list[int] = []
         self._received_any = False
+        #: When a flight-state packet last arrived, for staleness.
+        self._last_state_at: Optional[float] = None
+        self._short_packets = 0
         self.host_name = ""
         self.host_version: Optional[tuple[int, int, int, int]] = None
         self.lvar_bridge = None  # set by attach_lvar_bridge()
@@ -417,9 +421,15 @@ class SimConnectBackend(SimBackend):
         count = len(FLIGHT_STATE_VARS)
         needed = SIMOBJECT_DATA_OFFSET + 8 * count
         if size < needed:
+            # A reply too short to hold the variables we asked for. Silently
+            # dropping it leaves the aeroplane being flown on whatever was in
+            # the state before, for ever, with nothing said -- so count it and
+            # let staleness catch it.
+            self._short_packets += 1
             return
         raw = ctypes.string_at(data, needed)[SIMOBJECT_DATA_OFFSET:]
         values = struct.unpack(f"<{count}d", raw)
+        self._last_state_at = time.monotonic()
         state = self._state
         for spec, value in zip(FLIGHT_STATE_VARS, values):
             if spec.kind is bool:
@@ -464,6 +474,26 @@ class SimConnectBackend(SimBackend):
     def receiving_data(self) -> bool:
         """Whether at least one flight-state packet has arrived."""
         return self._received_any
+
+    @property
+    def data_age_s(self) -> float:
+        """How long since the simulator last told us anything.
+
+        Nothing in SimConnect announces a connection that has gone away
+        without a QUIT -- the simulator crashing, or the link failing -- and
+        an empty dispatch queue looks exactly like an idle one. Without this
+        the AI Pilot keeps flying, at four hertz, on a snapshot that stopped
+        changing minutes ago: the aeroplane appears frozen in the log while
+        the program reports everything as normal.
+        """
+        if self._last_state_at is None:
+            return float("inf") if self._received_any else 0.0
+        return max(0.0, time.monotonic() - self._last_state_at)
+
+    @property
+    def short_packets(self) -> int:
+        """Replies too short to hold the variables we subscribed to."""
+        return self._short_packets
 
     @property
     def exception_codes(self) -> list[int]:

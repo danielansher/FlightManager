@@ -66,12 +66,25 @@ class VerticalGuidance:
                 return leg
         return None
 
-    def descent_floor_ft(self, active_index: int) -> float:
-        """Altitude to put in the selector during the descent."""
+    def descent_floor_ft(self, active_index: int, altitude_ft: Optional[float] = None) -> float:
+        """Altitude to put in the selector during the descent.
+
+        Never above the aeroplane. On a short sector the cruise level is
+        capped by how much room there is to climb and get down again, while
+        the approach fixes are still built on an unclipped three degree slope
+        -- so the next constraint could sit thousands of feet above an
+        aeroplane that was being told to descend at the same moment. On a real
+        MCP that is a mode conflict: a vertical speed away from the selected
+        altitude is either refused or captured upwards, and the aeroplane
+        climbs, or sits at its level, exactly when it needs to start down.
+        """
         constraint = self.next_constraint(active_index)
-        if constraint is not None:
-            return constraint.altitude_ft or self.vertical.faf_altitude_ft
-        return self.vertical.faf_altitude_ft
+        floor = self.vertical.faf_altitude_ft
+        if constraint is not None and constraint.altitude_ft:
+            floor = constraint.altitude_ft
+        if altitude_ft is not None:
+            floor = min(floor, altitude_ft)
+        return floor
 
     # -- The command ---------------------------------------------------------
     def update(self, phase: Phase, altitude_ft: float, distance_to_go_nm: float,
@@ -136,7 +149,7 @@ class VerticalGuidance:
             commanded = max(commanded, -500.0)
 
         return VerticalCommand(
-            altitude_ft=self.descent_floor_ft(active_index),
+            altitude_ft=self.descent_floor_ft(active_index, altitude_ft),
             vertical_speed_fpm=commanded,
             speed=speed,
             speed_is_mach=is_mach,

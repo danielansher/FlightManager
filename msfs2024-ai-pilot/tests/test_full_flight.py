@@ -170,14 +170,57 @@ def test_an_approach_without_an_ils_is_flown_and_landed_anyway(navdata):
 
 
 def test_handover_mode_gives_the_aeroplane_back_stable(navdata):
-    result = fly_flight(navdata, "EGLL", "EGCC", "b787-10",
-                        options=PilotOptions(autoland="handover"))
-    assert result.said("your controls")
-    handover = next(e for e in result.pilot.log if "your controls" in e.message.lower())
+    """Configured and on speed *at the moment of the handover*.
+
+    This used to look at the state at the end of the flight, which says
+    nothing about the handover -- and passed only because the autopilot came
+    back on and landed the aeroplane itself.
+    """
+    from aipilot.aircraft.registry import build_adapter
+    from aipilot.autopilot.controller import AIPilot
+    from aipilot.geo import distance_nm
+    from aipilot.route.planner import plan_route
+    from aipilot.sim.mock import MockAircraftModel, MockSim
+
+    profile = get_profile("b787-10")
+    origin, destination = navdata.airport("EGLL"), navdata.airport("EGCC")
+    plan = plan_route(origin, destination, profile, navdata)
+    runway = plan.departure_runway
+    sim = MockSim(runway.threshold, runway.heading_true_deg, origin.elevation_ft,
+                  model=MockAircraftModel(max_climb_fpm=profile.max_climb_rate_fpm),
+                  terrain=lambda p: destination.elevation_ft
+                  if distance_nm(p, destination.position) < 5 else origin.elevation_ft)
+    adapter, _ = build_adapter("b787-10", sim)
+    pilot = AIPilot(sim, adapter, profile, plan,
+                    PilotOptions(autoland="handover", taxi=False))
+    pilot.engage()
+
+    at_handover = None
+    after: list[bool] = []
+    for _ in range(int(4 * 3600 / 2.0)):
+        pilot.update(2.0)
+        if at_handover is None and pilot._handed_over:
+            at_handover = (sim.state.gear_down_pct, sim.state.flaps_index,
+                           sim.state.ias_kt, sim.state.altitude_agl_ft)
+        elif at_handover is not None:
+            after.append(sim.state.ap_master)
+        if pilot.phase in (Phase.COMPLETE, Phase.ABORTED):
+            break
+
+    assert at_handover is not None, "it never handed over"
+    gear, flaps, ias, agl = at_handover
+    assert gear > 95, "handed over with the gear not down"
+    assert flaps >= profile.landing_flaps_index - 1, \
+        f"handed over at flaps {flaps}, not configured to land"
+    assert abs(ias - profile.final_approach_speed_kt) < 25, \
+        f"handed over at {ias:.0f} kt against a Vapp of "\
+        f"{profile.final_approach_speed_kt:.0f}"
+    assert agl <= 260, f"handed over at {agl:.0f} ft, nowhere near the runway"
+
+    handover = next(e for e in pilot.log if "your controls" in e.message.lower())
     assert handover.level == "warning"
-    # It hands over configured and on speed, not in some random state.
-    assert result.sim.state.gear_down_pct > 95
-    assert result.sim.state.flaps_index >= get_profile("b787-10").landing_flaps_index - 1
+    assert after and not any(after), \
+        "the autopilot came back after the aeroplane was handed over"
 
 
 @pytest.mark.parametrize("aircraft", ["b787-10", "b787-9", "a350-900", "a350-1000",

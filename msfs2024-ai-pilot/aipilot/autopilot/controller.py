@@ -150,6 +150,11 @@ LONG_LANDING_FRACTION = 0.33
 #: grass. The guidance settles inside twenty feet, so there is ample margin.
 STABILISATION_XTK_NM = 0.08
 
+#: Slack allowed when picking a leg to rejoin on, engaging in the air. Enough
+#: for a circuit or a base leg, which fly away from the field on purpose; not
+#: enough to fly back towards the departure airport.
+REJOIN_SLACK_NM = 40.0
+
 #: How often to ask the tug to disconnect, and how long to wait before giving
 #: up on the simulator ever reporting that it has. The interval matters: the
 #: event is a toggle, and the state that says whether it worked arrives at
@@ -612,8 +617,23 @@ class AIPilot:
         So instead: find the leg whose centreline the aeroplane is actually
         nearest to, ignoring legs it has already flown past, and fly to the end
         of that one. That is what a crew looking at the map would pick.
+
+        With one more condition, which nearness alone does not give. A leg the
+        aeroplane has not yet *reached* is scored by distance to its start, and
+        an aeroplane near the destination is genuinely nearer the departure leg
+        than to anything in the arrival -- the arrival legs are all behind it,
+        the departure leg is merely somewhere else. Handed over overhead the
+        field, it turned round and flew back towards the departure runway: a
+        two-hundred-and-seventy mile excursion, on one in five of the positions
+        in the arrival sector. So a candidate is only considered if flying it
+        does not add materially to the distance still to go.
         """
         from ..geo import along_track_nm, cross_track_nm
+
+        direct = distance_nm(position, self.plan.destination.position)
+        # Room for a circuit or a base leg, which legitimately fly away from
+        # the field for a while, without room to fly back to the departure.
+        budget = direct * 2.0 + REJOIN_SLACK_NM
 
         best_index, best_distance = None, float("inf")
         for index in range(1, len(self.plan)):
@@ -629,11 +649,18 @@ class AIPilot:
                 offset = distance_nm(position, start)   # not yet at the leg
             else:
                 offset = abs(cross_track_nm(position, start, end))
+            # What joining here would actually cost: the run in to the fix,
+            # plus the rest of the route after it.
+            to_fly = distance_nm(position, end) + \
+                self.plan.distance_from_leg_to_end_nm(index)
+            if to_fly > budget:
+                continue
             if offset < best_distance:
                 best_index, best_distance = index, offset
         if best_index is None:
-            # Past the end of every leg: aim at the last fix and let the
-            # approach logic sort it out.
+            # Nothing ahead worth joining -- past the end of the route, or the
+            # only nearby legs would send it backwards. Aim at the last fix and
+            # let the approach logic sort it out.
             return len(self.plan) - 1
         return best_index
 
@@ -679,6 +706,14 @@ class AIPilot:
             leg = self.lateral.active_leg
             self._event(f"Now tracking {leg.ident}"
                         f"{f' ({leg.phase})' if leg.phase != 'enroute' else ''}")
+        if self._handed_over:
+            # "YOUR CONTROLS" has to mean it. This used to re-engage the
+            # autopilot on the cycle after the handover and fly the aeroplane
+            # against the pilot's inputs at a hundred and seventy feet -- and
+            # every input they made kicked it off again, which _watch_autopilot
+            # deliberately ignores once handed over, so it came straight back
+            # from here. The command is still computed, for the status line.
+            return command
         self.adapter.engage_autopilot(state)
         self.adapter.select_heading_mode(state)
         self.adapter.set_heading_true(command.heading_true_deg, state)
@@ -692,8 +727,13 @@ class AIPilot:
             state.ground_speed_kt, self.lateral.active_index, state.altitude_agl_ft,
         )
         command = self._apply_terrain_floor(command, state, max(0.0, distance_to_go))
-        if self.phase is Phase.LANDING and not self._autoland_active \
-                and not self._handed_over:
+        if self._handed_over:
+            # Nothing at all once the landing is theirs. Falling through to the
+            # altitude selector put field elevation plus fifty feet on the MCP
+            # with a descent rate beside it, which is the "level off just above
+            # the runway and fly down it" case the flare exists to prevent.
+            return command
+        if self.phase is Phase.LANDING and not self._autoland_active:
             # _fly_flare owns altitude and rate from here down; issuing an
             # altitude selection as well would level the aeroplane off just
             # above the runway, which is precisely what it must not do.
@@ -1638,10 +1678,16 @@ class AIPilot:
             if not self._handover_warned and \
                     state.altitude_agl_ft <= HANDOVER_WARNING_AGL_FT:
                 self._handover_warned = True
+                # Feet divided by sixty is not a number of seconds. It said
+                # seventeen when the answer was nearer a minute, which is how
+                # long the descent from here to the handover height actually
+                # takes at the rate being flown.
+                to_lose = max(0.0, state.altitude_agl_ft - HANDOVER_AGL_FT)
+                rate_fps = max(1.0, -state.vertical_speed_fpm) / 60.0
                 self._event(
                     f"Stand by to take control: the landing is yours at "
                     f"{HANDOVER_AGL_FT:.0f} ft, about "
-                    f"{HANDOVER_WARNING_AGL_FT / 60:.0f} seconds from now.",
+                    f"{to_lose / rate_fps:.0f} seconds from now.",
                     "warning",
                 )
             if not self._handed_over and state.altitude_agl_ft <= HANDOVER_AGL_FT:

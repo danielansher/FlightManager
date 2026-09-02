@@ -251,3 +251,143 @@ def test_the_static_guard_needs_a_separator():
     assert not escape.startswith(base + os.sep)
     assert escape.startswith(base), \
         "this is the case a bare startswith would have allowed"
+
+
+# --- Guidance ----------------------------------------------------------------
+def _airport(icao, lat, lon, elevation, heading, magvar=0.0):
+    from aipilot.navdata.base import Airport, Runway
+
+    threshold = LatLon(lat, lon)
+    return Airport(icao, icao, threshold, elevation, magvar_deg=magvar, runways=(
+        Runway(f"{max(1, int(round(heading / 10))):02d}", threshold, heading,
+               10000, elevation, width_ft=150.0),))
+
+
+@pytest.fixture
+def rejoin_pilot():
+    """A plan whose departure runway points away from the destination, which
+    is what makes the departure leg look attractive from the arrival."""
+    from aipilot.aircraft.registry import build_adapter
+    from aipilot.autopilot.controller import AIPilot, PilotOptions
+    from aipilot.perf.profiles import get_profile
+    from aipilot.route.planner import plan_route
+    from aipilot.sim.mock import MockSim
+
+    origin = _airport("EGLL", 51.4775, -0.48286, 79.0, 89.68)
+    destination = _airport("EGCC", 53.3450, -2.2990, 254.0, 52.0)
+    profile = get_profile("b787-10")
+    plan = plan_route(origin, destination, profile, None)
+    sim = MockSim(origin.position, 0.0, origin.elevation_ft)
+    adapter, _ = build_adapter("b787-10", sim)
+    return AIPilot(sim, adapter, profile, plan, PilotOptions()), plan, destination
+
+
+def test_engaging_near_the_destination_never_flies_back_to_the_departure(rejoin_pilot):
+    """A leg not yet *reached* was scored by raw distance to its start, so an
+    aeroplane in the arrival sector -- where every arrival leg is behind it --
+    found the departure leg nearest and turned round. A two hundred and
+    seventy mile excursion, on one position in five."""
+    import random
+
+    from aipilot.geo import destination_point, distance_nm
+
+    pilot, plan, destination = rejoin_pilot
+    random.seed(7)
+    wrong = 0
+    for _ in range(400):
+        position = destination_point(destination.position,
+                                     random.uniform(0.0, 360.0),
+                                     random.uniform(1.0, 60.0))
+        index = pilot._closest_useful_leg(position)
+        to_fly = distance_nm(position, plan[index].position) + \
+            plan.distance_from_leg_to_end_nm(index)
+        if to_fly > distance_nm(position, destination.position) * 2 + 60:
+            wrong += 1
+    assert wrong == 0, f"{wrong} of 400 positions would fly the wrong way"
+
+
+def test_engaging_past_the_destination_aims_at_the_end_of_the_route(rejoin_pilot):
+    from aipilot.geo import destination_point, initial_bearing_deg
+
+    pilot, plan, destination = rejoin_pilot
+    course = initial_bearing_deg(plan.origin.position, destination.position)
+    beyond = destination_point(destination.position, course, 30.0)
+    assert pilot._closest_useful_leg(beyond) >= len(plan) - 2
+
+
+def test_the_descent_selector_is_never_above_the_aeroplane():
+    """On a short sector the cruise is capped for the distance while the
+    approach fixes are still built on an unclipped three degree slope, so the
+    next constraint sat thousands of feet above an aeroplane being told to
+    descend. On a real MCP that is a mode conflict, and the aeroplane either
+    climbs or refuses to leave its level."""
+    from aipilot.autopilot.phases import Phase
+    from aipilot.autopilot.vertical import VerticalGuidance
+    from aipilot.geo import destination_point
+    from aipilot.perf.profiles import get_profile
+    from aipilot.route.planner import plan_route
+    from aipilot.route.profile import build_vertical_profile
+
+    origin = _airport("AAAA", 51.0, 0.0, 100.0, 90.0)
+    far = destination_point(LatLon(51.0, 0.0), 90.0, 12.0)
+    destination = _airport("BBBB", far.lat, far.lon, 100.0, 270.0)
+    profile = get_profile("b787-10")
+    plan = plan_route(origin, destination, profile, None)
+    guidance = VerticalGuidance(
+        plan, profile,
+        build_vertical_profile(plan.cruise_altitude_ft, 100.0, profile))
+
+    for altitude in (1500.0, 2000.0, 3000.0):
+        for index in range(1, len(plan)):
+            command = guidance.update(Phase.DESCENT, altitude_ft=altitude,
+                                      distance_to_go_nm=14.9,
+                                      ground_speed_kt=250.0, active_index=index)
+            assert command.altitude_ft <= altitude + 1e-6, (
+                f"selector {command.altitude_ft:.0f} ft with the aeroplane at "
+                f"{altitude:.0f} ft, leg {index}")
+
+
+def test_cruise_levels_follow_the_magnetic_course():
+    """The semicircular rule is defined on magnetic track. Fed a true course,
+    any route within one local variation of north or south gets the other
+    hemisphere's levels -- the thousand feet opposite-direction traffic is
+    using."""
+    from aipilot.perf.profiles import get_profile, select_cruise_altitude
+    from aipilot.route.planner import magnetic_course
+
+    profile = get_profile("b787-10")
+    denver = _airport("KDEN", 39.86, -104.67, 5431.0, 170.0, magvar=8.0)
+    true_course = 185.0
+    assert magnetic_course(true_course, denver) == pytest.approx(177.0)
+    with_variation = select_cruise_altitude(
+        2000, magnetic_course(true_course, denver), profile)
+    without = select_cruise_altitude(2000, true_course, profile)
+    assert with_variation != without
+    assert int(with_variation / 1000) % 2 == 1, "eastbound wants an odd level"
+
+
+# --- The debug report on a damaged trace -------------------------------------
+@pytest.mark.parametrize("records", [
+    [{"t": "header", "at": 0}, {"t": "sample", "phase": "cruise", "agl": 30000}],
+    [{"t": "header", "at": 0}, {"t": "sample", "at": 1, "phase": "cruise"},
+     {"t": "totals", "at": 1, "commands": {"event:X": 999},
+      "spans": {"event:X": [0]}}],
+    [{"t": "header", "at": 0}, {"t": "sample", "at": 1, "phase": "cruise"},
+     {"t": "totals", "at": 1, "commands": {"event:X": 9}, "spans": {"event:X": "?"}}],
+    [{"t": "header", "at": 0}, {"t": "sample", "at": 1, "phase": "cruise"},
+     {"t": "totals", "at": 1, "commands": ["a", "b"]}],
+    [{"t": "header", "at": "x"}, {"t": "sample", "at": "y", "phase": "cruise"}],
+    [{"t": "header", "at": 0, "vmo_kt": "fast"},
+     {"t": "sample", "at": 1, "phase": "cruise", "ias": 280}],
+    [{"t": "header", "at": 0},
+     {"t": "sample", "at": 1, "phase": "climb", "agl": None, "on_ground": False}],
+])
+def test_the_report_reads_a_damaged_trace(tmp_path, records):
+    """The traces worth reading come from flights that went wrong, and those
+    are the traces most likely to be damaged."""
+    from aipilot.debug import analyse, format_report
+
+    path = tmp_path / "t.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in records))
+    text = format_report(analyse(str(path)))
+    assert "AI Pilot flight trace" in text

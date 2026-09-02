@@ -29,6 +29,7 @@ are meant to be sent to someone.
 from __future__ import annotations
 
 import json
+import math
 import os
 import platform
 import time
@@ -326,12 +327,12 @@ class Report:
 
     def rate_per_minute(self, name: str) -> float:
         """How often a command was sent while it was being sent at all."""
-        count = self.commands.get(name, 0)
+        count = _num(self.commands.get(name, 0))
         span = self.command_spans.get(name)
-        if not span:
+        if not isinstance(span, (list, tuple)) or len(span) < 2:
             window = self.duration_s
         else:
-            window = max(float(span[1]) - float(span[0]), 0.0)
+            window = max(_num(span[1]) - _num(span[0]), 0.0)
         # A burst inside one second is measured against one second, not zero.
         return count / max(window / 60.0, 1.0 / 60.0)
     duration_s: float = 0.0
@@ -385,20 +386,37 @@ def analyse(path: str) -> Report:
     # The totals record is written when a flight ends, and the traces worth
     # reading are often from one that was killed before it did. Fall back to
     # counting the command records themselves, which are all still there.
-    report.commands = totals or dict(counted.most_common())
-    report.command_spans = spans or seen_spans
+    report.commands = (totals if isinstance(totals, dict)
+                       else dict(counted.most_common()))
+    report.command_spans = spans if isinstance(spans, dict) else seen_spans
     report.samples = len(samples)
     if records:
-        report.duration_s = max(r.get("at", 0.0) for r in records)
+        report.duration_s = max(_num(r.get("at")) for r in records)
 
     last = None
     for sample in samples:
         if sample.get("phase") != last:
             last = sample.get("phase")
-            report.phases.append((last, sample.get("at", 0.0)))
+            report.phases.append((str(last), _num(sample.get("at"))))
 
     report.findings = _findings(report, samples)
     return report
+
+
+def _num(value: Any, default: float = 0.0) -> float:
+    """A number out of a trace, whatever the trace actually contains.
+
+    The whole point of this file is reading a trace from a flight that went
+    wrong, and a trace from a flight that went wrong is often damaged: a
+    record with no timestamp, a field that is a string, a truncated span. The
+    reader tolerates a half-written last line; the analysis on top of it used
+    to fall over on any of the above.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return number if math.isfinite(number) else default
 
 
 def _longest_run(samples: list[dict], predicate) -> float:
@@ -437,8 +455,8 @@ def _findings(report: Report, samples: list[dict]) -> list[Finding]:
         rate = report.rate_per_minute(name)
         if rate > SPAM_PER_MINUTE:
             span = report.command_spans.get(name)
-            over = (f" over {(float(span[1]) - float(span[0])) / 60:.1f} min"
-                    if span else "")
+            over = (f" over {(_num(span[1]) - _num(span[0])) / 60:.1f} min"
+                    if isinstance(span, (list, tuple)) and len(span) >= 2 else "")
             found.append(Finding(
                 "error",
                 f"{name} sent {count} times ({rate:.0f} a minute{over})",
@@ -467,8 +485,8 @@ def _findings(report: Report, samples: list[dict]) -> list[Finding]:
             "its own power."))
 
     # 4. Overspeed.
-    fastest = max((s.get("ias") or 0) for s in samples) if samples else 0
-    vmo = (report.header.get("vmo_kt") or 0)
+    fastest = max(_num(s.get("ias")) for s in samples) if samples else 0.0
+    vmo = _num(report.header.get("vmo_kt"))
     if vmo and fastest > vmo + 5:
         found.append(Finding(
             "error", f"Reached {fastest:.0f} kt against a Vmo of {vmo:.0f}",
@@ -476,14 +494,15 @@ def _findings(report: Report, samples: list[dict]) -> list[Finding]:
 
     # 5. Low and not landing.
     low = [s for s in samples
-           if not s.get("on_ground") and (s.get("agl") or 1e9) < 500
+           if not s.get("on_ground") and _num(s.get("agl"), 1e9) < 500
            and s.get("phase") not in ("takeoff", "approach", "landing")]
     if low:
-        worst = min(low, key=lambda s: s.get("agl") or 1e9)
+        worst = min(low, key=lambda s: _num(s.get("agl"), 1e9))
         found.append(Finding(
             "error",
-            f"{worst.get('agl'):.0f} ft above the ground in {worst.get('phase')}",
-            f"At {worst.get('at'):.0f} s. This program has no terrain "
+            f"{_num(worst.get('agl')):.0f} ft above the ground in "
+            f"{worst.get('phase')}",
+            f"At {_num(worst.get('at')):.0f} s. This program has no terrain "
             "awareness beyond a floor, so this is worth understanding."))
 
     # 6. The autopilot not holding.
@@ -512,7 +531,7 @@ def _findings(report: Report, samples: list[dict]) -> list[Finding]:
             found.append(Finding(
                 "warning" if event["level"] == "warning" else "error",
                 event.get("message", ""),
-                f"reported at {event.get('at', 0):.0f} s in "
+                f"reported at {_num(event.get('at')):.0f} s in "
                 f"{event.get('phase', '?')}"))
     return found
 
@@ -546,10 +565,11 @@ def format_report(report: Report) -> str:
         "------",
     ]
     for name, at in report.phases:
-        lines.append(f"  {at / 60:7.1f} min  {name}")
+        lines.append(f"  {_num(at) / 60:7.1f} min  {name}")
 
     lines += ["", "Commands sent", "-------------"]
     for name, count in list(report.commands.items())[:20]:
+        count = int(_num(count))
         rate = report.rate_per_minute(name)
         flag = ("  <-- far too often"
                 if rate > SPAM_PER_MINUTE and count > 50
