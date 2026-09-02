@@ -29,11 +29,15 @@ DEFAULT_RATE_HZ = 4.0
 
 # --- Argument parsing --------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
+    from . import __version__
+
     parser = argparse.ArgumentParser(
         prog="aipilot",
-        description="An AI Pilot for Microsoft Flight Simulator 2024: type two "
+        description="An AI Pilot for Microsoft Flight Simulator: type two "
                     "airports, and it flies the aeroplane there.",
     )
+    parser.add_argument("--version", action="version",
+                        version=f"AI Pilot {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     def add_common(sub: argparse.ArgumentParser) -> None:

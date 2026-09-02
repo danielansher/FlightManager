@@ -34,10 +34,13 @@ def _heading(text: str) -> None:
 
 
 def run_doctor(args) -> int:
-    print("AI Pilot diagnostics")
+    from . import __version__
+
+    print(f"AI Pilot {__version__} diagnostics")
     problems = 0
 
     _heading("Environment")
+    print(f"{TICK} AI Pilot {__version__}")
     print(f"{TICK} Python {platform.python_version()} on {platform.system()}")
     if platform.system() != "Windows":
         print(f"{WARN} Not Windows, so the simulator cannot be reached from here. "
