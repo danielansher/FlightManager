@@ -20,7 +20,7 @@ import csv
 import os
 from typing import Optional
 
-from ..geo import LatLon, destination_point, normalize_deg
+from ..geo import LatLon, destination_point, initial_bearing_deg, normalize_deg
 from .base import Airport, NavDataProvider, Runway
 
 AIRPORTS_URL = "https://davidmegginson.github.io/ourairports-data/airports.csv"
@@ -134,15 +134,30 @@ class OurAirportsProvider(NavDataProvider):
             length = _f(row, "length_ft", 0.0) or 0.0
             width = _f(row, "width_ft", 150.0) or 150.0
             surface = (row.get("surface") or "").strip()
+            # Both thresholds, so a missing heading can be measured rather
+            # than guessed.
+            ends = {p: (_f(row, f"{p}_latitude_deg"), _f(row, f"{p}_longitude_deg"))
+                    for p in ("le", "he")}
             for prefix in ("le", "he"):
+                other = "he" if prefix == "le" else "le"
                 ident = (row.get(f"{prefix}_ident") or "").strip().upper()
-                lat = _f(row, f"{prefix}_latitude_deg")
-                lon = _f(row, f"{prefix}_longitude_deg")
+                lat, lon = ends[prefix]
                 heading = _f(row, f"{prefix}_heading_degT")
                 if not ident:
                     continue
+                if heading is None and None not in ends[prefix] \
+                        and None not in ends[other]:
+                    # Measured between the two thresholds. Exact, and true --
+                    # which the designator is not.
+                    heading = initial_bearing_deg(
+                        LatLon(*ends[prefix]), LatLon(*ends[other]))
                 if heading is None:
-                    # Fall back to the number in the designator: "27L" -> 270.
+                    # Last resort: the number in the designator, "27L" -> 270.
+                    # Runway numbers are *magnetic* and this is stored as true,
+                    # so at somewhere with real variation the whole approach is
+                    # built a few degrees off. Nothing better is available from
+                    # this file, and it only happens where the heading and one
+                    # threshold are both missing.
                     digits = "".join(c for c in ident if c.isdigit())
                     if not digits:
                         continue

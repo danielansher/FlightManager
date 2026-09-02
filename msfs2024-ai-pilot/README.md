@@ -162,6 +162,24 @@ two hundred feet, stable and configured, and tells you so.
 --no-lights                   # do not touch any switches
 ```
 
+## How it compares
+
+Microsoft's own AI Pilot in MSFS 2024 flies takeoff, cruise, approach and
+landing, and the [documented weak points](https://flyawaysimulation.com/ask/answers/use-ai-pilot-copilot-msfs-2024/)
+are taxiing, short runways, and routes with discontinuities. Users report
+[arriving high and fast and going around at 600 ft](https://forums.flightsimulator.com/t/a-i-pilot-still-almost-completely-useless-certainly-hugely-unreliable-and-error-prone/585347),
+and landings that use most of the runway.
+
+This program was audited against those same failure modes, and had versions of
+two of them. It arrived at the 500 ft gate around 500 ft to one side of the
+centreline and touched down in the grass, while reporting itself lined up; and
+it began its flare at 80 ft and floated 3000 ft down the runway. Both are
+fixed, and both now have tests with tolerances tight enough to catch a
+recurrence — the old ones allowed half a nautical mile.
+
+It does taxi, which the reference implementation does not, wherever Little
+Navmap has the data.
+
 ## Which runway it picks
 
 The runway is most of the flight plan: get it wrong and the taxi goes to the
@@ -270,6 +288,10 @@ at — and if not, where it looked and what would fix it.
   low cruise level and walk away.
 - **No traffic, no ATC, no weather avoidance.** It reads the wind to choose a
   runway; it does not fly around a thunderstorm or answer a controller.
+- **No crosswind or runway-length limit.** The runway is chosen from the wind,
+  so a bad one is unusual, but if you force one with `--arrival-runway` nothing
+  checks it against the aeroplane. At about 30 kt of crosswind it lands roughly
+  a hundred feet off the centreline — on the paved surface, but not by much.
 - **No published procedures from SimBrief either.** `--simbrief` takes the
   route's fixes, the runways and the cruise level. The SID and STAR names in the
   route string are dropped, because this program flies fix to fix.
@@ -283,28 +305,33 @@ at — and if not, where it looked and what would fix it.
 python -m pytest tests/ -q
 ```
 
-239 tests. The suite flies complete flights — brakes off to a full stop — against
+283 tests. The suite flies complete flights — brakes off to a full stop — against
 a point-mass simulator that speaks the same protocol as SimConnect. Every
 aircraft in the fleet, a twenty-hour long haul, a date-line crossing, a forced
 go-around, nine real routes out of Kennedy, and four different control rates.
 
 `tests/test_gate_to_gate.py` flies KJFK to KIAD from a nose-in gate to a stand,
-with a taxiway network at both ends: pushback, taxi, takeoff, cruise, descent,
-approach, landing, and taxi in. Every ground failure reported from the simulator
-so far has been in a phase the older tests never entered.
+with a taxiway network at both ends. `tests/test_arrival_hardening.py` measures
+where the wheels actually touch down — how far along the runway, how far off the
+centreline, in four winds — because "it reached the runway" and "it landed on
+the runway" are different claims. `tests/test_hardening.py` holds one test per
+defect found by audit, each reproduced before it was fixed.
 
-The mock is only worth as much as its fidelity, and three places where it was
-kinder than the simulator have been corrected — each of which was hiding a real
-bug rather than merely being approximate:
+The mock is only worth as much as its fidelity, and four places where it was
+kinder than the simulator have been corrected — each was hiding a real bug
+rather than merely being approximate:
 
 - `KEY_TUG_HEADING` now summons the tug, as it does in the simulator.
 - A landed aeroplane can taxi again instead of braking for ever.
 - Wind no longer blows a parked aeroplane across the apron.
+- It reports the wind it actually applies, rather than the free-stream value
+  while flying the reduced one — which made the guidance crab three times too
+  much and look like a guidance fault.
 
-`tests/test_debug.py` replays the failures that actually happened — the tug that
-would not let go, the four-hundred-knot descent, an aeroplane held on its stand —
-and checks the report names each one, so the recorder is held to being useful
-rather than merely present.
+Tolerances are held to what they are supposed to prove. Two assertions here
+passed for months on behaviour that was plainly wrong: half a nautical mile of
+cross-track at the stabilisation gate, and a handover check that looked at the
+aeroplane's configuration at the end of the flight rather than at the handover.
 
 ## Layout
 

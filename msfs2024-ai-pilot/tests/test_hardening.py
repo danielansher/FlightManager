@@ -391,3 +391,36 @@ def test_the_report_reads_a_damaged_trace(tmp_path, records):
     path.write_text("\n".join(json.dumps(r) for r in records))
     text = format_report(analyse(str(path)))
     assert "AI Pilot flight trace" in text
+
+
+def test_a_missing_runway_heading_is_measured_not_guessed(tmp_path):
+    """The fallback derived the heading from the designator -- "27L" -> 270 --
+    and stored it as a true heading. Runway numbers are magnetic, so at
+    somewhere with real variation the entire approach was built several
+    degrees off the actual pavement. Where both thresholds are known the true
+    heading can simply be measured."""
+    airports = tmp_path / "airports.csv"
+    airports.write_text(
+        "id,ident,type,name,latitude_deg,longitude_deg,elevation_ft,gps_code\n"
+        "1,PANC,large,Anchorage,61.1743,-149.9962,152,PANC\n")
+    # Anchorage 15/33: the designator says 150 degrees, the pavement runs
+    # nearer 173 true, because the variation there is about 15 degrees east.
+    runways = tmp_path / "runways.csv"
+    runways.write_text(
+        "id,airport_ref,airport_ident,length_ft,width_ft,surface,closed,"
+        "le_ident,le_latitude_deg,le_longitude_deg,le_heading_degT,"
+        "he_ident,he_latitude_deg,he_longitude_deg,he_heading_degT\n"
+        "1,1,PANC,10600,150,ASP,0,"
+        "15,61.1889,-149.9803,,"
+        "33,61.1601,-149.9720,\n")
+
+    airport = OurAirportsProvider(str(airports), str(runways)).airport("PANC")
+    assert airport is not None
+    by_ident = {r.ident: r for r in airport.runways}
+    assert set(by_ident) == {"15", "33"}
+    # Measured between the thresholds, not 150 from the designator.
+    assert 165.0 < by_ident["15"].heading_true_deg < 185.0, \
+        f"{by_ident['15'].heading_true_deg:.0f} looks like the designator, not the pavement"
+    reciprocal = abs(by_ident["15"].heading_true_deg
+                     - by_ident["33"].heading_true_deg)
+    assert abs(reciprocal - 180.0) < 1.0, "the two ends must be reciprocal"
