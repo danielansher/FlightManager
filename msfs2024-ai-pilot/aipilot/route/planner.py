@@ -20,6 +20,7 @@ great circle for the rest.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Optional, Sequence
 
 from ..geo import (
@@ -35,6 +36,32 @@ from ..navdata.base import Airport, NavDataProvider, Runway, Waypoint, select_ru
 from ..perf.profiles import AircraftProfile, select_cruise_altitude
 from .plan import FlightPlan, RouteLeg
 from .profile import FAF_DISTANCE_NM
+
+#: The shortest runway worth planning a jet transport onto.
+MIN_RUNWAY_FT = 6000.0
+
+
+@dataclass(frozen=True)
+class AirportWind:
+    """A wind at one airport, and where the figure came from.
+
+    The source is carried alongside the numbers so the plan can say
+    *why* it picked a runway. "27R, from the METAR" and "27R, because
+    nobody told us the wind" look identical otherwise, and only one of
+    them is worth trusting.
+    """
+
+    #: The source used when nothing at all is known about the wind.
+    UNKNOWN = "no wind information"
+
+    from_deg: float = 0.0
+    speed_kt: float = 0.0
+    source: str = UNKNOWN
+
+    @classmethod
+    def calm(cls, source: str = UNKNOWN) -> "AirportWind":
+        return cls(0.0, 0.0, source)
+
 
 #: Where the departure leg ends: straight ahead off the runway.
 DEPARTURE_LEG_NM = 6.0
@@ -294,15 +321,29 @@ def plan_route(
     route: Optional[str] = None,
     wind_from_deg: float = 0.0,
     wind_kt: float = 0.0,
-    min_runway_ft: float = 6000.0,
+    departure_wind: Optional[AirportWind] = None,
+    arrival_wind: Optional[AirportWind] = None,
+    min_runway_ft: float = MIN_RUNWAY_FT,
 ) -> FlightPlan:
-    """Build a complete, flyable plan between two airports."""
-    warnings: list[str] = []
+    """Build a complete, flyable plan between two airports.
 
-    dep_rwy = _choose_runway(origin, departure_runway, wind_from_deg, wind_kt,
-                             min_runway_ft, warnings, "departure")
-    arr_rwy = _choose_runway(destination, arrival_runway, wind_from_deg, wind_kt,
-                             min_runway_ft, warnings, "arrival")
+    ``wind_from_deg`` and ``wind_kt`` are a single planning wind applied at
+    both ends. ``departure_wind`` and ``arrival_wind`` override it one end
+    at a time, which is what you want for anything longer than a hop: the
+    wind at the far end decides the landing runway and has nothing to do
+    with the wind you are sitting in.
+    """
+    warnings: list[str] = []
+    runway_notes: list[str] = []
+
+    typed = AirportWind(wind_from_deg, wind_kt, "the wind you gave")
+    dep_wind = departure_wind or typed
+    arr_wind = arrival_wind or typed
+
+    dep_rwy = _choose_runway(origin, departure_runway, dep_wind,
+                             min_runway_ft, warnings, runway_notes, "departure")
+    arr_rwy = _choose_runway(destination, arrival_runway, arr_wind,
+                             min_runway_ft, warnings, runway_notes, "arrival")
 
     direct_course = initial_bearing_deg(origin.position, destination.position)
     direct_distance = distance_nm(origin.position, destination.position)
@@ -365,6 +406,7 @@ def plan_route(
         cruise_altitude_ft=cruise_altitude_ft,
         legs=legs + enroute_legs + approach,
         warnings=warnings,
+        runway_notes=runway_notes,
     )
 
     if dep_rwy and dep_rwy.surface == "synthetic":
@@ -456,19 +498,39 @@ def _choose_approach(destination: Airport, runway: Optional[Runway],
     return built if built else fallback
 
 
-def _choose_runway(airport: Airport, requested: Optional[str], wind_from_deg: float,
-                   wind_kt: float, min_length_ft: float, warnings: list[str],
-                   role: str) -> Optional[Runway]:
+def _choose_runway(airport: Airport, requested: Optional[str], wind: "AirportWind",
+                   min_length_ft: float, warnings: list[str],
+                   notes: list[str], role: str) -> Optional[Runway]:
+    """Pick a runway, and say why -- the choice is worth being able to check."""
     if requested:
         runway = airport.runway(requested)
         if runway is not None:
+            notes.append(f"{airport.icao} {role} runway {runway.ident}, as asked for.")
             return runway
         warnings.append(
             f"{airport.icao} has no runway {requested}; picked one from the wind instead."
         )
-    chosen = select_runway(airport, wind_from_deg, wind_kt, min_length_ft)
+    chosen = select_runway(airport, wind.from_deg, wind.speed_kt, min_length_ft)
     if chosen is None:
         warnings.append(f"No {role} runway data for {airport.icao}.")
+        return None
+
+    if wind.speed_kt < 3.0:
+        because = ("calm" if wind.source == AirportWind.UNKNOWN
+                   else f"{wind.source} says calm")
+        notes.append(
+            f"{airport.icao} {role} runway {chosen.ident}: {because}, so the "
+            f"longest runway with an ILS."
+        )
+    else:
+        headwind = wind.speed_kt * math.cos(
+            math.radians(signed_diff_deg(wind.from_deg, chosen.heading_true_deg))
+        )
+        notes.append(
+            f"{airport.icao} {role} runway {chosen.ident}: {wind.source} "
+            f"{wind.from_deg:03.0f} at {wind.speed_kt:.0f} kt, "
+            f"{headwind:+.0f} kt down the runway."
+        )
     return chosen
 
 

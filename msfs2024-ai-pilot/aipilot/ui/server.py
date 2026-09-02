@@ -26,6 +26,7 @@ from ..autopilot.phases import Phase
 from ..geo import distance_nm
 from ..navdata.resolve import NavDataSources, build_navdata
 from ..perf.profiles import get_profile
+from ..briefing import resolve_winds
 from ..route.planner import plan_route
 from ..route.profile import build_vertical_profile
 from ..sim.base import SimBackendError
@@ -60,6 +61,21 @@ class FlightSession:
             airports_csv=request.get("airports_csv") or None,
             runways_csv=request.get("runways_csv") or None,
         ))
+        brief = None
+        if request.get("simbrief"):
+            from ..simbrief import SimBriefError, fetch_plan
+
+            try:
+                brief = fetch_plan(str(request["simbrief"]))
+            except SimBriefError as exc:
+                raise ValueError(str(exc)) from exc
+            for field in ("origin", "destination", "departure_runway",
+                          "arrival_runway", "route"):
+                if not request.get(field):
+                    request[field] = getattr(brief, field) or ""
+            if not request.get("cruise") and brief.cruise_altitude_ft:
+                request["cruise"] = brief.cruise_altitude_ft
+
         origin = navdata.airport(request.get("origin", ""))
         destination = navdata.airport(request.get("destination", ""))
         if origin is None:
@@ -69,8 +85,19 @@ class FlightSession:
             raise ValueError(f"{request.get('destination', '').upper() or '(blank)'} "
                              "is not in the navigation data.")
 
-        wind_from = float(request.get("wind_from") or 0)
-        wind_kt = float(request.get("wind_kt") or 0)
+        typed_wind = None
+        if request.get("wind_from") or request.get("wind_kt"):
+            typed_wind = (float(request.get("wind_from") or 0),
+                          float(request.get("wind_kt") or 0))
+        wind_notes: list[str] = []
+        winds = resolve_winds(
+            origin.icao, destination.icao,
+            typed=typed_wind,
+            use_metar=not request.get("no_metar"),
+            simbrief_metars=(brief.origin_metar, brief.destination_metar)
+            if brief else None,
+            report=wind_notes.append,
+        )
         cruise = request.get("cruise")
         cruise_ft = None
         if cruise:
@@ -84,7 +111,8 @@ class FlightSession:
             arrival_runway=request.get("arrival_runway") or None,
             cruise_altitude_ft=cruise_ft,
             route=request.get("route") or None,
-            wind_from_deg=wind_from, wind_kt=wind_kt,
+            departure_wind=winds.departure,
+            arrival_wind=winds.arrival,
         )
         vertical = build_vertical_profile(
             plan.cruise_altitude_ft,
@@ -97,7 +125,9 @@ class FlightSession:
                 self.navdata.close()
             self.navdata = navdata
             self.plan = plan
-            self._pending = (key, profile, plan, (wind_from, wind_kt))
+            self._pending = (key, profile, plan,
+                             (winds.departure.from_deg,
+                              winds.departure.speed_kt))
         return {
             "ok": True,
             "navdata": navdata.describe(),
@@ -110,6 +140,8 @@ class FlightSession:
             "distance_nm": plan.total_distance_nm,
             "top_of_descent_nm": vertical.top_of_descent_nm,
             "warnings": plan.warnings,
+            "runway_notes": plan.runway_notes + wind_notes,
+            "simbrief": brief.describe() if brief else "",
             "legs": [
                 {"ident": leg.ident, "lat": leg.position.lat, "lon": leg.position.lon,
                  "altitude_ft": leg.altitude_ft, "speed_kt": leg.speed_kt,

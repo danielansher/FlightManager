@@ -75,6 +75,7 @@ has to be typed:
 | `Check-My-Setup.bat` | checks everything and says what is missing |
 | `Find-SimConnect.bat` | finds SimConnect.dll on your PC and puts it in place |
 | `Fly.bat` | asks where to, then flies there |
+| `Fly-My-SimBrief-Plan.bat` | flies the plan you last made in SimBrief |
 | `AI-Pilot-Panel.bat` | opens the control panel in your browser |
 
 You never touch the simulator's own AI Pilot — this replaces it, and leaving it
@@ -144,12 +145,41 @@ two hundred feet, stable and configured, and tells you so.
 --arrival-runway 27L          # override the runway choice
 --route "MID DVR KONAN"       # follow specific fixes where it can resolve them
 --cruise 350                  # force a flight level
---wind 250/45                 # plan against a wind
+--wind 250/45                 # plan against a wind you name
+--simbrief YOUR_USERNAME      # fly your latest SimBrief plan, runways and all
+--no-metar                    # do not look up the weather; plan as if calm
 --airborne                    # engage with the aeroplane already flying
 --msfs 2020                   # which sim, when you have both installed
 --no-taxi                     # you taxi to the runway, it flies from there
 --no-lights                   # do not touch any switches
 ```
+
+## Which runway it picks
+
+The runway is most of the flight plan: get it wrong and the taxi goes to the
+wrong end of the field and the approach is built onto a runway nobody is using.
+
+It no longer guesses. Each end is resolved on its own — a single wind applied to
+both is wrong for anything longer than a hop — from the runway you named, your
+SimBrief plan, the simulator's own wind at the departure end, or the current
+METAR, in that order. Every plan says what it chose and why:
+
+```
+KJFK departure runway 04L: the METAR 040 at 14 kt, +14 kt down the runway.
+EGLL arrival runway 27R: the METAR 250 at 11 kt, +10 kt down the runway.
+```
+
+The weather lookup is automatic, free, needs no account, and falls back to calm
+without complaint if the network is not there.
+
+If you already plan in SimBrief, fly the plan you made and skip the typing:
+
+```bash
+python -m aipilot fly --simbrief YOUR_SIMBRIEF_USERNAME
+```
+
+[docs/RUNWAYS.md](docs/RUNWAYS.md) has the full order of preference, what gets
+taken from a SimBrief release, and why FlightRadar24 is not one of the sources.
 
 ## If the autopilot keeps dropping out
 
@@ -182,7 +212,11 @@ It uses whatever you already have, in this order:
 - **No terrain awareness.** The descent path is computed to the runway, not
   around what is between here and there. Do not point it across the Alps at a
   low cruise level and walk away.
-- **No traffic, no ATC, no weather avoidance.**
+- **No traffic, no ATC, no weather avoidance.** It reads the wind to choose a
+  runway; it does not fly around a thunderstorm or answer a controller.
+- **No published procedures from SimBrief either.** `--simbrief` takes the
+  route's fixes, the runways and the cruise level. The SID and STAR names in the
+  route string are dropped, because this program flies fix to fix.
 - **Airbus local variables.** See [docs/AIRCRAFT.md](docs/AIRCRAFT.md). Short
   version: the parts that are documented are implemented, the parts that are not
   are left empty rather than guessed, and there is a tool to find them yourself.
@@ -211,6 +245,9 @@ throughout.
 aipilot/
   geo.py            spherical geodesy, turn geometry, wind triangle
   units.py          atmosphere and speed conversions
+  metar.py          real-world wind, so the runway choice is not a guess
+  simbrief.py       import the flight plan you already made
+  briefing.py       decides which wind to plan each end with
   sim/              SimConnect over ctypes, the MobiFlight bridge, the mock
   navdata/          Little Navmap, OurAirports, the bundled sample
   route/            flight plan, planner, vertical profile
@@ -224,4 +261,9 @@ aipilot/
 
 ## Licence
 
-MIT. Not affiliated with Microsoft, Asobo, iniBuilds, Headwind or FlyByWire.
+MIT. Not affiliated with Microsoft, Asobo, iniBuilds, Headwind, FlyByWire,
+SimBrief or Navigraph.
+
+Weather observations come from the US National Weather Service's Aviation
+Weather Center, which is in the public domain. SimBrief data comes only from
+your own account, only when you ask for it with `--simbrief`.

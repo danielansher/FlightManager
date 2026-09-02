@@ -154,6 +154,29 @@ cruise level, when to configure, when to hand back. Three rules run through it:
   flies its own path and flares — and says that is what it is doing — or hands
   over, loudly.
 
+## Outside data is optional, and never on the critical path
+
+Two sources tell the planner things it cannot work out for itself: the current
+METAR, which decides the runways, and a SimBrief release, which is the plan the
+user already made. Both are read through `urllib` from the standard library, and
+both are arranged so a slow or absent network costs nothing:
+
+* The METAR lookup has a six second timeout and falls all the way back to calm,
+  saying so. A weather service being down must never stop a flight.
+* A SimBrief failure *does* stop the flight, on purpose. If you asked to fly your
+  SimBrief plan, quietly flying a different route instead is not helpful.
+
+Neither is parsed by trusting a schema. The METAR reader works on the raw text,
+so the same function serves the weather service, the METAR embedded in a SimBrief
+release, and anything you paste in yourself. The SimBrief reader digs for the
+fields it wants and treats every one as optional, because OFP templates vary by
+airline and a missing field should fall back rather than raise.
+
+`briefing.py` holds the decision -- which source wins at which end -- so the
+command line and the browser panel cannot drift apart on it. The result carries
+its own provenance (`AirportWind.source`), which is why the plan can say
+"the METAR 040 at 14 kt" rather than just naming a runway.
+
 ## Things deliberately not done
 
 **No PID controllers.** Every loop here is proportional with a clamp. Cross-track
@@ -169,5 +192,10 @@ goes through the autopilot's vertical-speed channel.
 **No dependencies.** This is a tool people run on the same machine as a flight
 simulator, often while the simulator is using most of it. `pip install` a
 dependency tree is a worse first five minutes than a file that starts instantly.
-`ctypes`, `sqlite3` and `http.server` are entirely adequate for one user on
-localhost.
+`ctypes`, `sqlite3`, `urllib` and `http.server` are entirely adequate for one
+user on localhost.
+
+**No FlightRadar24.** It has no free API, scraping it would breach its terms,
+and -- the real reason -- it does not publish runway-in-use as data. Inferring
+it from the tracks of recent arrivals reconstructs, badly, what the wind says
+directly. [docs/RUNWAYS.md](RUNWAYS.md) sets this out in full.

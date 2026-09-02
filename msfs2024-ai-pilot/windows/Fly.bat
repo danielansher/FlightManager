@@ -1,7 +1,9 @@
 @echo off
 REM ---------------------------------------------------------------------------
 REM  Asks where you want to go, then flies there.
-REM  MSFS must already be running, with the 787 on a runway, engines started.
+REM  MSFS must already be running, with the 787 loaded and the engines
+REM  started. At a gate it will push back and taxi out on its own where the
+REM  airport has taxiway data; on a runway it just goes.
 REM ---------------------------------------------------------------------------
 setlocal
 cd /d "%~dp0\.."

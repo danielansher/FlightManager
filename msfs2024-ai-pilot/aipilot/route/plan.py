@@ -51,6 +51,9 @@ class FlightPlan:
     cruise_altitude_ft: float
     legs: list[RouteLeg] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    #: Why each runway was chosen -- which wind, and where that wind came
+    #: from. Not a warning: the normal case has something to say here.
+    runway_notes: list[str] = field(default_factory=list)
 
     # -- Geometry ------------------------------------------------------------
     def __len__(self) -> int:

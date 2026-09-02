@@ -24,8 +24,9 @@ function request() {
     cruise: $('cruise').value.trim(),
     departure_runway: $('departure_runway').value.trim(),
     arrival_runway: $('arrival_runway').value.trim(),
-    wind_from: $('wind_from').value.trim() || 0,
-    wind_kt: $('wind_kt').value.trim() || 0,
+    wind_from: $('wind_from').value.trim(),
+    wind_kt: $('wind_kt').value.trim(),
+    simbrief: $('simbrief').value.trim(),
     route: $('route').value.trim(),
     sim: $('sim').value,
     speed: parseFloat($('speed').value) || 1,
@@ -34,9 +35,15 @@ function request() {
   };
 }
 
-function showMessages(warnings, error) {
+function showMessages(warnings, error, notes) {
   const box = $('warnings');
   box.innerHTML = '';
+  (notes || []).forEach((text) => {
+    const el = document.createElement('div');
+    el.className = 'note';
+    el.textContent = text;
+    box.appendChild(el);
+  });
   if (error) {
     const el = document.createElement('div');
     el.className = 'error-box';
@@ -61,7 +68,11 @@ $('plan-btn').addEventListener('click', async () => {
     if (!reply.ok) { showMessages([], reply.error); $('engage-btn').disabled = true; return; }
     state.plan = reply;
     state.trail = [];
-    showMessages(reply.warnings, null);
+    if (reply.simbrief) {
+      $('origin').value = reply.origin.icao;
+      $('destination').value = reply.destination.icao;
+    }
+    showMessages(reply.warnings, null, reply.runway_notes);
     $('engage-btn').disabled = false;
     $('map-panel').hidden = false;
     drawMap();

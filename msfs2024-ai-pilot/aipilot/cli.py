@@ -17,6 +17,7 @@ from typing import Optional
 from .aircraft.registry import available_aircraft, build_adapter, resolve_key
 from .autopilot.controller import AIPilot, PilotOptions, PilotStatus
 from .autopilot.phases import FlightEvent, Phase
+from .briefing import resolve_winds, wind_from_sim
 from .geo import distance_nm
 from .navdata.base import NavDataProvider
 from .navdata.resolve import NavDataSources, build_navdata
@@ -41,8 +42,12 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     def add_common(sub: argparse.ArgumentParser) -> None:
-        sub.add_argument("origin", help="departure airport ICAO code, e.g. EGLL")
-        sub.add_argument("destination", help="arrival airport ICAO code, e.g. KJFK")
+        sub.add_argument("origin", nargs="?",
+                         help="departure airport ICAO code, e.g. EGLL "
+                              "(optional with --simbrief)")
+        sub.add_argument("destination", nargs="?",
+                         help="arrival airport ICAO code, e.g. KJFK "
+                              "(optional with --simbrief)")
         sub.add_argument("-a", "--aircraft", default="b787-10",
                          help="aircraft key or alias (default: b787-10)")
         sub.add_argument("--departure-runway", help="force a departure runway, e.g. 27R")
@@ -50,7 +55,14 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("--cruise", type=float,
                          help="cruise altitude in feet, or a flight level under 500")
         sub.add_argument("--route", help='enroute fixes, e.g. "MID DVR KONAN"')
-        sub.add_argument("--wind", help="planning wind as DIR/SPEED, e.g. 250/35")
+        sub.add_argument("--wind",
+                         help="planning wind as DIR/SPEED, e.g. 250/35. Without "
+                              "this the current METAR at each airport is used")
+        sub.add_argument("--simbrief", metavar="USER",
+                         help="take the route and runways from your latest "
+                              "SimBrief flight plan (username or pilot ID)")
+        sub.add_argument("--no-metar", action="store_true",
+                         help="do not look up the weather; plan as if calm")
         sub.add_argument("--msfs", choices=("2020", "2024"), default=None,
                          help="which simulator you are flying, when both are "
                               "installed; decides which Little Navmap database to use")
@@ -145,11 +157,66 @@ def _navdata_from_args(args) -> NavDataProvider:
 
 
 # --- Shared setup ------------------------------------------------------------
-def _prepare_flight(args):
+def _simbrief_plan(args, report):
+    """Fetch the SimBrief plan, if one was asked for.
+
+    A failure here stops the flight rather than being shrugged off: if you
+    asked to fly your SimBrief plan, quietly flying a different route
+    instead is not a helpful thing to do.
+    """
+    if not getattr(args, "simbrief", None):
+        return None
+    from .simbrief import SimBriefError, fetch_plan
+
+    try:
+        plan = fetch_plan(args.simbrief)
+    except SimBriefError as exc:
+        raise SystemExit(f"{exc}")
+    report(plan.describe())
+    for note in plan.notes:
+        report(f"  ! {note}")
+    return plan
+
+
+def _apply_simbrief(args, brief) -> None:
+    """Fill in anything you did not type from the SimBrief plan.
+
+    Typed arguments always win. The SimBrief plan is a default, not an
+    override: asking for a different runway on the command line has to
+    mean something.
+    """
+    if brief is None:
+        return
+    if not args.origin:
+        args.origin = brief.origin
+    if not args.destination:
+        args.destination = brief.destination
+    if not args.departure_runway:
+        args.departure_runway = brief.departure_runway
+    if not args.arrival_runway:
+        args.arrival_runway = brief.arrival_runway
+    if not args.route and brief.route:
+        args.route = brief.route
+    if args.cruise is None and brief.cruise_altitude_ft:
+        # _cruise_altitude reads anything under 500 as a flight level, and
+        # SimBrief gives feet, so hand it feet it cannot misread.
+        args.cruise = max(500.0, brief.cruise_altitude_ft)
+
+
+def _prepare_flight(args, report=print):
     """Resolve the aircraft, the nav data and the route. Shared by fly and plan."""
     if getattr(args, "profiles", None):
-        changed = load_profile_overrides(args.profiles)
-        print(f"Applied performance overrides for: {', '.join(changed) or 'nothing'}")
+        report(f"Applied performance overrides for: "
+               f"{', '.join(load_profile_overrides(args.profiles)) or 'nothing'}")
+
+    brief = _simbrief_plan(args, report)
+    _apply_simbrief(args, brief)
+
+    if not args.origin or not args.destination:
+        raise SystemExit(
+            "Give a departure and an arrival airport, e.g. `fly KJFK EGLL`, or "
+            "use --simbrief to take them from your SimBrief flight plan."
+        )
 
     key = resolve_key(args.aircraft)
     if key is None:
@@ -173,16 +240,28 @@ def _prepare_flight(args):
         raise SystemExit(f"{args.destination.upper()} is not in the navigation data "
                          f"({navdata.describe()}).")
 
-    wind_from, wind_kt = _wind(args.wind)
+    winds = resolve_winds(
+        origin.icao,
+        destination.icao,
+        typed=_wind(args.wind) if args.wind else None,
+        use_metar=not getattr(args, "no_metar", False),
+        simbrief_metars=(brief.origin_metar, brief.destination_metar) if brief else None,
+        report=report,
+    )
+
     plan = plan_route(
         origin, destination, profile, navdata,
         departure_runway=args.departure_runway,
         arrival_runway=args.arrival_runway,
         cruise_altitude_ft=_cruise_altitude(args.cruise),
         route=args.route,
-        wind_from_deg=wind_from, wind_kt=wind_kt,
+        departure_wind=winds.departure,
+        arrival_wind=winds.arrival,
     )
-    return key, profile, navdata, plan, (wind_from, wind_kt)
+    # The mock simulator flies in the wind it is given, and the departure
+    # wind is the one it starts in.
+    return key, profile, navdata, plan, (winds.departure.from_deg,
+                                         winds.departure.speed_kt)
 
 
 # --- Commands ----------------------------------------------------------------
@@ -200,6 +279,8 @@ def command_plan(args) -> int:
     print(f"Aircraft:        {profile.name}")
     print()
     print(plan.describe())
+    for note in plan.runway_notes:
+        print(f"  {note}")
     print()
     print(f"Top of descent   {vertical.top_of_descent_nm:.0f} nm to run "
           f"({vertical.effective_angle_deg:.1f} degrees to the final approach fix)")
@@ -265,6 +346,8 @@ def command_fly(args) -> int:
     key, profile, navdata, plan, wind = _prepare_flight(args)
     print(f"Navigation data: {navdata.describe()}")
     print(plan.describe())
+    for note in plan.runway_notes:
+        print(f"  {note}")
     print()
 
     try:
@@ -274,6 +357,16 @@ def command_fly(args) -> int:
         return 1
 
     adapter, _ = build_adapter(key, sim)
+
+    if args.sim == "msfs":
+        if not _wait_for_data(sim):
+            print("Connected to SimConnect, but no flight data is arriving. Load a "
+                  "flight and try again.", file=sys.stderr)
+            sim.close()
+            navdata.close()
+            return 1
+        _match_departure_to_sim_wind(sim, args, plan, profile, print)
+
     ground = arrival_ground = None
     if not args.no_taxi:
         ground, arrival_ground = _ground_networks(navdata, plan, print)
@@ -289,12 +382,6 @@ def command_fly(args) -> int:
     pilot = AIPilot(sim, adapter, profile, plan, options,
                     listener=printer.on_event, ground=ground,
                     arrival_ground=arrival_ground)
-
-    if args.sim == "msfs":
-        if not _wait_for_data(sim):
-            print("Connected to SimConnect, but no flight data is arriving. Load a "
-                  "flight and try again.", file=sys.stderr)
-            return 1
 
     pilot.engage()
     # The control step stays fixed whatever the time multiplier. Speeding up by
@@ -321,6 +408,48 @@ def command_fly(args) -> int:
         navdata.close()
     printer.finish()
     return 0
+
+
+def _match_departure_to_sim_wind(sim, args, plan, profile, report) -> None:
+    """Depart into the wind the simulator actually has.
+
+    A METAR is an observation of the real world an hour ago. The simulator
+    might be running live weather, a preset, or a date in 1997, and only it
+    knows which. Since the aeroplane is sitting at the departure airport
+    with the sim already telling us the wind, use that -- it is not a
+    forecast, it is the wind we are about to take off into.
+
+    Only the departure end: the wind at the destination is hours away and
+    the simulator has nothing to say about it yet.
+    """
+    if args.departure_runway or args.airborne or plan.departure_runway is None:
+        return
+
+    from .geo import distance_nm
+    from .navdata.base import select_runway
+    from .route.planner import MIN_RUNWAY_FT, rebuild_departure
+
+    state = sim.poll(0.0)
+    if state is None:
+        return
+    wind = wind_from_sim(state)
+    if wind is None or wind.speed_kt < 3.0:
+        return
+    # If we are not at the departure airport, the wind here says nothing
+    # about the wind there.
+    if distance_nm(state.position, plan.origin.position) > 30.0:
+        return
+
+    chosen = select_runway(plan.origin, wind.from_deg, wind.speed_kt,
+                           MIN_RUNWAY_FT)
+    if chosen is None or chosen.ident == plan.departure_runway.ident:
+        return
+
+    was = plan.departure_runway.ident
+    rebuild_departure(plan, chosen, profile)
+    report(f"  The simulator's wind is {wind.from_deg:03.0f} at "
+           f"{wind.speed_kt:.0f} kt, so departing runway {chosen.ident} "
+           f"instead of {was}.")
 
 
 def _ground_networks(navdata, plan, report):

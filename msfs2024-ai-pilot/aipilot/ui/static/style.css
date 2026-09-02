@@ -97,3 +97,14 @@ canvas { width: 100%; height: auto; display: block; background: #0a0e14; border-
 .log .error-line { background: rgba(248,81,73,.12); color: #ffb3ae; }
 .log .t { color: var(--dim); }
 .log .p { color: var(--accent); }
+
+/* A note explains a choice the planner made. It is information, not a
+   problem, so it must not look like the warnings it sits above. */
+.note {
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  border-left: 3px solid #4a90d9;
+  color: #b8c4d0;
+  font-size: 13px;
+}
