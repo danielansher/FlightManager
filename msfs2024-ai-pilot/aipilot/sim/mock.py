@@ -270,7 +270,12 @@ class MockSim(SimBackend):
         elif e == "PARKING_BRAKE_SET":
             st.parking_brake = bool(value)
         elif e == "RUDDER_SET":
-            self.steering = clamp(value / 16383.0, -1.0, 1.0)
+            # Negated, because RUDDER_SET positive turns the aeroplane LEFT and
+            # self.steering is positive to the right. Reading the axis straight
+            # through gave this mock the opposite plant sign from the simulator
+            # it stands in for, so every taxi test passed here for the wrong
+            # reason while no real taxi ever reached a runway.
+            self.steering = clamp(-value / 16383.0, -1.0, 1.0)
         elif e in ("AXIS_LEFT_BRAKE_SET", "AXIS_RIGHT_BRAKE_SET"):
             # A brake axis runs from -16383 (off) to +16383 (hard on), so zero
             # is HALF braking, not none. Reading it as 0..16383 made a released

@@ -40,6 +40,25 @@ Logger = Callable[[str], None]
 BRAKE_AXIS_OFF = -16383
 BRAKE_AXIS_FULL = 16383
 
+#: Which way the rudder axis runs. Steering here is positive to the right;
+#: RUDDER_SET positive turns the aeroplane LEFT, so the two disagree and the
+#: value has to be negated on the way out.
+#:
+#: Measured, not assumed. Across every recorded flight, 105 windows where the
+#: commanded steering was held past 0.3 for four seconds or more while rolling
+#: above 2 kt: 99 of them turned the opposite way to the command. The clearest
+#: is a full right command held for 18.25 s, during which the heading went
+#: 298.0 to 231.7 -- sixty-six degrees to the LEFT, monotonically.
+#:
+#: This is why no taxi ever finished. The guidance steers at a point, the
+#: aeroplane turns away from it, the error grows until it wraps past 180
+#: degrees, and the command slams to the opposite stop -- a limit cycle
+#: centred on the reciprocal of the bearing it was supposed to be tracking.
+#: In all twelve taxi logs the distance still to run at the end was no smaller
+#: than at the start: the aeroplane has never once made progress along a taxi
+#: route.
+RUDDER_AXIS_SIGN = -1
+
 
 @dataclass
 class AdapterCapabilities:
@@ -380,7 +399,8 @@ class AircraftAdapter:
         if self._steering is not None and abs(target - self._steering) < 0.02:
             return
         self._steering = target
-        self.sim.send_event("RUDDER_SET", int(round(target * 16383)))
+        self.sim.send_event("RUDDER_SET",
+                            int(round(RUDDER_AXIS_SIGN * target * 16383)))
 
     def set_wheel_brakes(self, amount: float) -> None:
         """Proportional wheel braking, 0 to 1, applied evenly.
