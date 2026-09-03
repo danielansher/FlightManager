@@ -590,9 +590,49 @@ def test_thrust_going_nowhere_releases_the_brakes_anyway():
         "the guard should suppress this, which is the whole problem"
 
     adapter.release_brakes_hard()
-    events = [e for e, _v in sim.events_sent]
-    assert "PARKING_BRAKES" in events
-    assert "AXIS_LEFT_BRAKE_SET" in events and "AXIS_RIGHT_BRAKE_SET" in events
+    # What matters is the brake being off afterwards, not which event carried
+    # the request. Asserting the event name let a toggle pass for a release.
+    assert not sim.state.parking_brake
+    assert sim.wheel_brakes == 0.0
+
+
+def test_the_escape_hatch_does_not_set_the_brake_it_meant_to_release():
+    """Flown out of a Kennedy gate this watchdog fired every eight seconds, and
+    each firing flipped the parking brake instead of releasing it: the aeroplane
+    spent half of every cycle held by the brake its own rescue had just applied.
+    PARKING_BRAKES is a toggle, and the escape hatch sent it blind -- so on any
+    aeroplane already released it did precisely the wrong thing."""
+    from aipilot.aircraft.registry import build_adapter
+    from aipilot.sim.mock import MockSim
+
+    sim = MockSim(LatLon(51.0, 0.0))
+    adapter, _ = build_adapter("b787-10", sim)
+    sim.state.parking_brake = False
+
+    for firing in range(4):
+        adapter.release_brakes_hard()
+        assert not sim.state.parking_brake, \
+            f"the parking brake came on at firing {firing + 1}"
+        assert sim.wheel_brakes == 0.0
+
+
+def test_releasing_the_wheel_brakes_actually_releases_them():
+    """A brake axis runs -16383 to +16383, so its centre is half braking.
+    Scaling 0..1 onto 0..16383 meant "no brakes" was sent as zero -- half on.
+    The 787 pushed back at Kennedy would not roll afterwards at 65% N1, and the
+    trace showed the release going out exactly as intended."""
+    from aipilot.aircraft.registry import build_adapter
+    from aipilot.sim.mock import MockSim
+
+    sim = MockSim(LatLon(51.0, 0.0))
+    adapter, _ = build_adapter("b787-10", sim)
+
+    adapter.set_wheel_brakes(1.0)
+    assert sim.wheel_brakes == 1.0, "full braking should be full"
+
+    adapter.set_wheel_brakes(0.0)
+    assert sim.wheel_brakes == 0.0, \
+        f"asked for no brakes and the aeroplane kept {sim.wheel_brakes:.0%}"
 
 
 def test_the_same_database_is_not_opened_twice(tmp_path, monkeypatch):

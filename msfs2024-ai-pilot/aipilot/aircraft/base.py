@@ -34,6 +34,12 @@ from ..sim.base import SimBackend, SimState
 
 Logger = Callable[[str], None]
 
+#: A simulator axis runs -16383 to +16383, and the wheel brake axes are no
+#: exception: the centre of the axis is half braking. Naming the ends stops
+#: "no brakes" being written as the zero it looks like it should be.
+BRAKE_AXIS_OFF = -16383
+BRAKE_AXIS_FULL = 16383
+
 
 @dataclass
 class AdapterCapabilities:
@@ -345,10 +351,19 @@ class AircraftAdapter:
         So this is the escape hatch: send everything, unconditionally, and
         forget the cached values so the next ordinary call is not suppressed
         as a no-op.
+
+        Unconditionally, however, only works with events that say what they
+        mean. PARKING_BRAKES is a TOGGLE: fired at an aeroplane whose brake is
+        already off it turns the brake ON, which is the opposite of the job.
+        Flown at Kennedy this fired every eight seconds and left the parking
+        brake on for half of every cycle. PARKING_BRAKE_SET takes the state
+        wanted and is idempotent -- confirmed on a Horizon 787-9, where 0 twice
+        stays released and 1 twice stays set -- so it needs no guess about what
+        the aeroplane currently reports, which is the whole point here.
         """
-        self.sim.send_event("PARKING_BRAKES")
-        self.sim.send_event("AXIS_LEFT_BRAKE_SET", 0)
-        self.sim.send_event("AXIS_RIGHT_BRAKE_SET", 0)
+        self.sim.send_event("PARKING_BRAKE_SET", 0)
+        self.sim.send_event("AXIS_LEFT_BRAKE_SET", BRAKE_AXIS_OFF)
+        self.sim.send_event("AXIS_RIGHT_BRAKE_SET", BRAKE_AXIS_OFF)
         self._brakes = None
 
     def apply_brakes(self) -> None:
@@ -368,12 +383,19 @@ class AircraftAdapter:
         self.sim.send_event("RUDDER_SET", int(round(target * 16383)))
 
     def set_wheel_brakes(self, amount: float) -> None:
-        """Proportional wheel braking, 0 to 1, applied evenly."""
+        """Proportional wheel braking, 0 to 1, applied evenly.
+
+        The brake axis is a full axis, -16383 to +16383, so its centre is half
+        braking. Scaling 0..1 onto 0..16383 therefore never released anything:
+        asking for no brakes sent zero, which is half on. A 787 pushed back at
+        Kennedy would not roll afterwards at 65% N1, and the trace showed the
+        release being sent exactly as intended.
+        """
         target = max(0.0, min(1.0, amount))
         if self._brakes is not None and abs(target - self._brakes) < 0.05:
             return
         self._brakes = target
-        raw = int(round(target * 16383))
+        raw = int(round(BRAKE_AXIS_OFF + target * (BRAKE_AXIS_FULL - BRAKE_AXIS_OFF)))
         self.sim.send_event("AXIS_LEFT_BRAKE_SET", raw)
         self.sim.send_event("AXIS_RIGHT_BRAKE_SET", raw)
 

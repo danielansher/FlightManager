@@ -264,10 +264,18 @@ class MockSim(SimBackend):
             self.throttle_pct = clamp(value / 16383.0 * 100.0, 0.0, 100.0)
         elif e == "PARKING_BRAKES":
             st.parking_brake = not st.parking_brake
+        elif e == "PARKING_BRAKE_SET":
+            st.parking_brake = bool(value)
         elif e == "RUDDER_SET":
             self.steering = clamp(value / 16383.0, -1.0, 1.0)
         elif e in ("AXIS_LEFT_BRAKE_SET", "AXIS_RIGHT_BRAKE_SET"):
-            self.wheel_brakes = clamp(value / 16383.0, 0.0, 1.0)
+            # A brake axis runs from -16383 (off) to +16383 (hard on), so zero
+            # is HALF braking, not none. Reading it as 0..16383 made a released
+            # brake of zero look fully off -- kinder than the simulator, and it
+            # hid a 787 sitting at a Kennedy gate at 65% N1 with the wheel
+            # brakes half on, unable to move and with nothing in the trace to
+            # say why.
+            self.wheel_brakes = clamp((value + 16383.0) / 32766.0, 0.0, 1.0)
         elif e == "THROTTLE_CUT":
             self.throttle_pct = 0.0
         elif e in LIGHT_EVENTS:
