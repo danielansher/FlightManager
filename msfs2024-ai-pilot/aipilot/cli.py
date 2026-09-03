@@ -107,6 +107,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("aircraft", help="list the aeroplanes it knows how to fly")
 
+    taxi = subparsers.add_parser(
+        "taxi",
+        help="print the taxi route across an airport, without the simulator "
+             "running -- the taxiway data is on disk, so this needs no flight")
+    taxi.add_argument("airport", help="ICAO code, e.g. KJFK")
+    taxi.add_argument("--stand", help="stand to start from (default: the first)")
+    taxi.add_argument("--runway", help="runway to taxi to (default: the longest)")
+    taxi.add_argument("--msfs", choices=("2020", "2024"), default=None)
+    taxi.add_argument("--navdata", help="path to a Little Navmap sqlite database")
+    taxi.add_argument("--stands", action="store_true",
+                      help="list the stands and stop")
+
     report = subparsers.add_parser(
         "debug-report",
         help="summarise a flight trace recorded with --debug, and say what "
@@ -697,8 +709,95 @@ def command_debug_report(args) -> int:
     return 1 if any(f.severity == "error" for f in report.findings) else 0
 
 
+def command_taxi(args) -> int:
+    """Show the route across an airport, and how sharp its turns are.
+
+    The taxiway data lives in a database on disk, so none of this needs the
+    simulator to be running -- which makes a ground-handling problem something
+    that can be looked at between flights rather than only during one.
+    """
+    from .geo import distance_nm, initial_bearing_deg, signed_diff_deg
+    from .route.taxi import build_network, runway_entry_point, simplify
+    from .units import FEET_PER_NM
+
+    navdata = _navdata_from_args(args)
+    icao = args.airport.strip().upper()
+    airport = navdata.airport(icao)
+    if airport is None:
+        raise SystemExit(f"{icao} is not in the navigation data "
+                         f"({navdata.describe()}).")
+    layout = navdata.ground_layout(icao)
+    network = build_network(layout) if layout is not None else None
+    if network is None or not network.usable:
+        raise SystemExit(
+            f"No taxiway data for {icao}. Taxiways come only from Little "
+            "Navmap's scenery database; see docs/GROUND.md.")
+
+    stands = list(layout.parking)
+    if args.stands:
+        print(f"{icao}: {len(stands)} stands")
+        for stand in stands:
+            print(f"  {stand.name:<10} {stand.kind:<10} {stand.position}")
+        navdata.close()
+        return 0
+
+    stand = None
+    if args.stand:
+        stand = next((s for s in stands
+                      if s.name.upper() == args.stand.strip().upper()), None)
+        if stand is None:
+            raise SystemExit(f"{icao} has no stand {args.stand!r}. "
+                             "Use --stands to list them.")
+    elif stands:
+        stand = stands[0]
+    if stand is None:
+        raise SystemExit(f"No stands at {icao}.")
+
+    runway = (airport.runway(args.runway) if args.runway
+              else max(airport.runways, key=lambda r: r.length_ft, default=None))
+    if runway is None:
+        raise SystemExit(f"No runway data for {icao}.")
+
+    print(f"{icao}: {len(layout.taxi_paths)} segments, "
+          f"{len(network.nodes)} junctions, {len(stands)} stands")
+    print(f"From stand {stand.name} to runway {runway.ident}")
+    route = network.route(stand.position, runway_entry_point(runway, network))
+    if not route:
+        raise SystemExit("No route across the taxiways between those two.")
+    reduced = simplify(route)
+    raw_len = sum(distance_nm(a, b) for a, b in zip(route, route[1:]))
+    print(f"  {len(route)} points, simplified to {len(reduced)}, "
+          f"{raw_len:.2f} nm")
+    print()
+    print("   #   leg_ft   turn  heading  position")
+    sharp = 0
+    for index, point in enumerate(reduced):
+        leg_ft = (distance_nm(reduced[index - 1], point) * FEET_PER_NM
+                  if index else 0.0)
+        heading = (initial_bearing_deg(reduced[index - 1], point)
+                   if index else 0.0)
+        turn = 0.0
+        if 0 < index < len(reduced) - 1:
+            turn = signed_diff_deg(
+                initial_bearing_deg(point, reduced[index + 1]), heading)
+        if abs(turn) > 30.0:
+            sharp += 1
+        print(f"  {index:2d} {leg_ft:8.0f} {turn:+6.0f} {heading:8.0f}  {point}")
+    print()
+    print(f"  {sharp} turns sharper than 30 degrees.")
+    tight = [i for i in range(1, len(reduced))
+             if distance_nm(reduced[i - 1], reduced[i]) * FEET_PER_NM < 150]
+    if tight:
+        print(f"  {len(tight)} legs shorter than 150 ft -- a route made of "
+              "micro-segments zig-zags, because each one is shorter than the "
+              "aeroplane.")
+    navdata.close()
+    return 0
+
+
 COMMANDS = {
     "fly": command_fly,
+    "taxi": command_taxi,
     "debug-report": command_debug_report,
     "plan": command_plan,
     "ui": command_ui,

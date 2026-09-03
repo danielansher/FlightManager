@@ -207,6 +207,20 @@ python -m aipilot fly --simbrief YOUR_SIMBRIEF_USERNAME
 [docs/RUNWAYS.md](docs/RUNWAYS.md) has the full order of preference, what gets
 taken from a SimBrief release, and why FlightRadar24 is not one of the sources.
 
+## Looking at an airport without flying
+
+The taxiway data is a database on disk, so a ground-handling problem can be
+looked at with the simulator shut:
+
+```bash
+python -m aipilot taxi KJFK --stands                 # what stands are there
+python -m aipilot taxi KJFK --stand A6 --runway 22R  # the route, turn by turn
+```
+
+It prints each leg's length and the turn onto it, and counts the turns sharper
+than thirty degrees and the legs shorter than the aeroplane. That is a taxi
+problem reproduced without leaving the terminal.
+
 ## When something goes wrong
 
 Reading a trace back:
