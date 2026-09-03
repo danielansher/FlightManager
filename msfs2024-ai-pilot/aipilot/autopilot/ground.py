@@ -73,6 +73,22 @@ XTK_GAIN_PER_NM = 60.0
 #: A point is passed once the aeroplane is within this of it.
 WAYPOINT_REACHED_NM = 0.010
 
+#: How far the aeroplane may drive chasing one waypoint, as a multiple of how
+#: far away that waypoint was when it started, before giving up on it.
+#:
+#: This catches an orbit, which neither the capture radius nor the behind-me
+#: rule can: off GC 31 at Kennedy a waypoint sat 166 to 221 ft away and 84 to
+#: 100 degrees off the nose, never near enough to capture, never far enough
+#: round to be behind, and the aeroplane circled it at 7 kt indefinitely.
+#:
+#: Measured against distance travelled rather than time or a receding range,
+#: both of which fire on ordinary tracking. Receding-range sequencing at 30 ft
+#: skipped most of Kennedy and flew across the airport 1500 ft off the
+#: taxiways; even qualified by bearing it was 400 ft off. Driving three times
+#: the length of a leg without arriving is unambiguous.
+GIVE_UP_TRAVEL_FACTOR = 3.0
+GIVE_UP_MIN_TRAVEL_NM = 0.05
+
 #: How far to push back before trying to taxi, and the most that will ever be
 #: attempted before giving up and asking for help.
 PUSHBACK_MIN_NM = 0.03
@@ -123,6 +139,13 @@ class TaxiGuidance:
     def __init__(self, route: list[LatLon]) -> None:
         self.route = list(route)
         self.index = 0
+        #: How far the aeroplane has driven in total, how far it had driven
+        #: when it started chasing the current waypoint, and how far away that
+        #: waypoint was then. Enough to notice it is going round in circles.
+        self._travelled_nm = 0.0
+        self._chase_started_nm = 0.0
+        self._chase_from_nm: Optional[float] = None
+        self._last_position: Optional[LatLon] = None
 
     @property
     def finished(self) -> bool:
@@ -185,12 +208,17 @@ class TaxiGuidance:
 
     def update(self, state: SimState) -> GroundCommand:
         position = state.position
+        if self._last_position is not None:
+            self._travelled_nm += distance_nm(self._last_position, position)
+        self._last_position = position
         capture = self.capture_radius_nm(state.ground_speed_kt)
         while not self.finished:
             target = self.route[self.index]
             distance = distance_nm(position, target)
             if distance <= capture:
                 self.index += 1
+                self._chase_from_nm = None
+                self._chase_started_nm = self._travelled_nm
                 continue
             # A point behind the aeroplane cannot be reached by turning towards
             # it -- the turn just carries it round in a circle. Once it is off
@@ -200,6 +228,24 @@ class TaxiGuidance:
                     abs(signed_diff_deg(initial_bearing_deg(position, target),
                                         state.heading_true_deg)) > BEHIND_ME_DEG:
                 self.index += 1
+                self._chase_from_nm = None
+                self._chase_started_nm = self._travelled_nm
+                continue
+            # Neither rule above catches a waypoint that sits just outside the
+            # turning circle and just inside a right angle: off GC 31 at
+            # Kennedy one stayed 166 to 221 ft away and 84 to 100 degrees off
+            # the nose, never near enough to capture, never far enough round to
+            # be behind, and the aeroplane orbited it at 7 kt indefinitely. So
+            # give up on anything it has driven three times the length of the
+            # leg trying to reach.
+            if self._chase_from_nm is None:
+                self._chase_from_nm = distance
+            budget = max(GIVE_UP_MIN_TRAVEL_NM,
+                         self._chase_from_nm * GIVE_UP_TRAVEL_FACTOR)
+            if self._travelled_nm - self._chase_started_nm > budget:
+                self.index += 1
+                self._chase_from_nm = None
+                self._chase_started_nm = self._travelled_nm
                 continue
             break
         if self.finished:

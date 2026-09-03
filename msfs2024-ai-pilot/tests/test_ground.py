@@ -604,3 +604,39 @@ def test_a_push_longer_than_its_turn_carries_on_straight():
     assert 470.0 < distance_nm(start, overshot) * 6076.12 < 530.0, \
         f"{distance_nm(start, overshot) * 6076.12:.0f} ft out, the flight made 501"
     assert abs(signed_diff_deg(initial_bearing_deg(start, overshot), 2.0)) < 12.0
+
+
+def test_a_waypoint_it_cannot_reach_is_eventually_given_up_on():
+    """Off GC 31 at Kennedy the first waypoint sat 166 to 221 ft away and 84 to
+    100 degrees off the nose: never inside the capture radius, never far enough
+    round to count as behind. The aeroplane orbited it at 7 kt and the taxi
+    never sequenced past its first point, for as long as it was left running.
+    """
+    from aipilot.autopilot.ground import TaxiGuidance
+    from aipilot.sim.base import SimState
+
+    unreachable = LatLon(40.6402, -73.7807)
+    beyond = destination_point(unreachable, 0.0, 3.0)
+    taxi = TaxiGuidance([unreachable, beyond])
+
+    # Circle the waypoint itself, 200 ft out, flying the tangent. It stays 200
+    # ft away -- outside the capture radius -- and 90 degrees off the nose,
+    # inside the angle that counts as behind. Exactly the orbit it flew.
+    radius_ft = 200.0
+    travelled_ft = 0.0
+    step_deg = 6.0
+    for step in range(240):
+        bearing = (step * step_deg) % 360.0
+        position = destination_point(unreachable, bearing, radius_ft / 6076.12)
+        state = SimState(lat=position.lat, lon=position.lon,
+                         heading_true_deg=(bearing + 90.0) % 360.0,
+                         ground_speed_kt=7.0, on_ground=True)
+        taxi.update(state)
+        travelled_ft += 2.0 * 3.14159 * radius_ft * (step_deg / 360.0)
+        if taxi.index > 0:
+            break
+
+    assert taxi.index > 0, \
+        "it circled the waypoint for a mile and never gave up on it"
+    assert travelled_ft < 4000.0, \
+        f"took {travelled_ft:.0f} ft of circling to notice"
