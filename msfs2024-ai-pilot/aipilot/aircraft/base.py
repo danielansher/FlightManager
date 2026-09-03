@@ -430,6 +430,17 @@ class AircraftAdapter:
         raw = int(target / 360.0 * 4294967296.0) & 0xFFFFFFFF
         self.sim.send_event("KEY_TUG_HEADING", raw)
 
+    def forget_tug_heading(self) -> None:
+        """Drop the cached tug heading, so the next request is really sent.
+
+        Deduplicating on the value is right once a tug is listening and wrong
+        before one is. Measured against a Horizon 787-9: the same event that
+        did nothing sent alongside the request for the tug turned the aeroplane
+        at about 1.3 degrees a second when sent three seconds later, once the
+        tug had attached.
+        """
+        self._tug_heading = None
+
     # -- Lights and cabin signs ----------------------------------------------
     # Only some of these have explicit on and off events; the rest are toggles.
     # A toggle sent without knowing the current state does the right thing half

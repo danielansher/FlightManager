@@ -387,6 +387,33 @@ def test_the_tug_is_not_summoned_back_after_being_released(network):
     assert detached_at is not None, "never reached the taxi"
 
 
+def test_the_tug_is_told_its_heading_after_it_has_attached(network):
+    """The heading went out in the same cycle as the request for the tug, when
+    the simulator had not attached one yet and there was nothing to hear it.
+    Nothing changes the heading afterwards, so the value guard in
+    set_tug_heading suppressed every later send. Pushed off a Kennedy gate the
+    aeroplane recorded exactly one heading for the whole push -- its gate
+    heading -- went 183 ft straight back without turning at all, and was left
+    nose-on to the terminal for the taxi to drive at."""
+    sim = MockSim(STAND, NOSE_IN_HEADING, DEPARTURE.elevation_ft)
+    adapter, _ = build_adapter("b787-10", sim)
+
+    def headings_sent():
+        return [v for e, v in sim.events_sent if e == "KEY_TUG_HEADING"]
+
+    adapter.set_tug_heading(67.0)
+    adapter.set_tug_heading(67.0)
+    assert len(headings_sent()) == 1, \
+        "an unchanged heading should not be resent every cycle"
+
+    # The one case where the unchanged heading must go again: the first send
+    # was thrown at a tug that did not exist yet.
+    adapter.forget_tug_heading()
+    adapter.set_tug_heading(67.0)
+    assert len(headings_sent()) == 2, \
+        "there is no way to tell the tug a heading it missed"
+
+
 def test_the_aeroplane_actually_moves_after_the_pushback(network):
     """Standing still with the nosewheel swinging is the thing to catch."""
     pilot, sim = _push_and_taxi(network)

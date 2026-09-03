@@ -358,6 +358,10 @@ class AIPilot:
         self._stuck_releases = 0
         self._tug_release_started: Optional[float] = None
         self._tug_release_sent = -TUG_RELEASE_INTERVAL_S
+        #: Whether a tug has been seen attached since this push was requested.
+        #: The heading has to be sent again once one has, because the first
+        #: send goes out before there is a tug to receive it.
+        self._tug_seen_attached = False
         self._overspeed = False
         self._speedbrake_out = False
         self._lever_percent = 60.0
@@ -965,6 +969,7 @@ class AIPilot:
                                              facing)
             self.adapter.set_wheel_brakes(0.0)
             self.adapter.set_parking_brake(False, state)
+            self._tug_seen_attached = False
             self.adapter.set_pushback(True, state)
             self.adapter.set_tug_heading(self.pushback.final_heading)
             self._event(
@@ -1087,6 +1092,18 @@ class AIPilot:
             # it is released, and no amount of thrust will move it.
             return
         # The tug event takes the heading the aeroplane should end up on.
+        #
+        # It has to go again the moment a tug is actually attached. The first
+        # send happens in the same cycle as the request for the tug, when there
+        # is nothing yet to receive it, and the heading never changes
+        # afterwards -- so the value-based guard in set_tug_heading suppressed
+        # every later send and the tug was never told anything. Pushed off a
+        # Kennedy gate the aeroplane recorded exactly one heading, its gate
+        # heading, for the whole push: 183 ft straight back, no turn at all,
+        # leaving it nose-on to the terminal for the taxi to drive at.
+        if state.pushback_attached and not self._tug_seen_attached:
+            self._tug_seen_attached = True
+            self.adapter.forget_tug_heading()
         self.adapter.set_tug_heading(self.pushback.final_heading)
         self.adapter.set_wheel_brakes(0.0)
 

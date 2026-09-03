@@ -133,6 +133,9 @@ class MockSim(SimBackend):
         self._gear_target_pct = 100.0
         self._spoilers_armed = False
         self.tug_heading_deg = 0.0
+        #: A tug asked for but not yet reported attached, applied on the next
+        #: poll. None when there is nothing pending.
+        self._pushback_pending: Optional[bool] = None
         self.steering = 0.0
         self.wheel_brakes = 0.0
         self._events: list[tuple[str, int]] = []
@@ -287,8 +290,13 @@ class MockSim(SimBackend):
             else:
                 setattr(st, field, not getattr(st, field))
         elif e == "TOGGLE_PUSHBACK":
-            st.pushback_attached = not st.pushback_attached
-            st.pushback_state = 0 if st.pushback_attached else 3
+            # A tug does not appear in the same breath as the request for it.
+            # The simulator attaches one and reports it on a later state
+            # update, and the gap matters: anything sent to the tug in the
+            # meantime is sent to nothing. Attaching instantly here made the
+            # mock kinder than the simulator and hid a tug heading that was
+            # only ever sent before there was a tug to hear it.
+            self._pushback_pending = not st.pushback_attached
         elif e == "KEY_TUG_HEADING":
             # The heading the aeroplane is to end up facing, scaled across the
             # range of a 32-bit unsigned integer.
@@ -307,6 +315,10 @@ class MockSim(SimBackend):
 
     # -- Integration ---------------------------------------------------------
     def poll(self, dt: float) -> SimState:
+        if self._pushback_pending is not None:
+            self.state.pushback_attached = self._pushback_pending
+            self.state.pushback_state = 0 if self._pushback_pending else 3
+            self._pushback_pending = None
         if dt > 0:
             self.step(dt)
         # The lever position the simulator reports back, as against the one
