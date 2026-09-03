@@ -71,12 +71,23 @@ def default_database_paths(msfs_version: Optional[str] = None) -> list[str]:
     home = os.path.expanduser("~")
     roots.append(os.path.join(home, ".config", "ABarthel", "little_navmap_db"))
     roots.append(os.path.join(home, "AppData", "Roaming", "ABarthel", "little_navmap_db"))
-    found = []
+    # De-duplicated by real path. On Windows %APPDATA% *is*
+    # ~/AppData/Roaming, so both roots name the same folder and the same
+    # database was opened twice -- which showed up as
+    # "littlenavmap(x) + littlenavmap(x)" in the diagnostics, and meant every
+    # airport lookup and every taxiway network was built twice over.
+    found: list[str] = []
+    seen: set[str] = set()
     for root in roots:
         for name in database_names_for(msfs_version):
             candidate = os.path.join(root, name)
-            if os.path.isfile(candidate):
-                found.append(candidate)
+            if not os.path.isfile(candidate):
+                continue
+            key = os.path.normcase(os.path.realpath(candidate))
+            if key in seen:
+                continue
+            seen.add(key)
+            found.append(candidate)
     return found
 
 

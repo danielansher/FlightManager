@@ -32,7 +32,14 @@ from ..geo import (
     normalize_deg,
     signed_diff_deg,
 )
-from ..navdata.base import Airport, NavDataProvider, Runway, Waypoint, select_runway
+from ..navdata.base import (
+    Airport,
+    NavDataProvider,
+    Runway,
+    Waypoint,
+    select_runway,
+    wind_components_kt,
+)
 from ..perf.profiles import AircraftProfile, select_cruise_altitude
 from .plan import FlightPlan, RouteLeg
 from .profile import FAF_DISTANCE_NM
@@ -351,10 +358,13 @@ def plan_route(
     dep_wind = departure_wind or typed
     arr_wind = arrival_wind or typed
 
-    dep_rwy = _choose_runway(origin, departure_runway, dep_wind,
-                             min_runway_ft, warnings, runway_notes, "departure")
-    arr_rwy = _choose_runway(destination, arrival_runway, arr_wind,
-                             min_runway_ft, warnings, runway_notes, "arrival")
+    # The aeroplane's own figures, unless the caller insisted on something.
+    shortest = (profile.min_runway_ft if min_runway_ft == MIN_RUNWAY_FT
+                else min_runway_ft)
+    dep_rwy = _choose_runway(origin, departure_runway, dep_wind, shortest,
+                             warnings, runway_notes, "departure", profile)
+    arr_rwy = _choose_runway(destination, arrival_runway, arr_wind, shortest,
+                             warnings, runway_notes, "arrival", profile)
 
     direct_course = initial_bearing_deg(origin.position, destination.position)
     direct_distance = distance_nm(origin.position, destination.position)
@@ -512,38 +522,84 @@ def _choose_approach(destination: Airport, runway: Optional[Runway],
 
 def _choose_runway(airport: Airport, requested: Optional[str], wind: "AirportWind",
                    min_length_ft: float, warnings: list[str],
-                   notes: list[str], role: str) -> Optional[Runway]:
-    """Pick a runway, and say why -- the choice is worth being able to check."""
-    if requested:
-        runway = airport.runway(requested)
-        if runway is not None:
-            notes.append(f"{airport.icao} {role} runway {runway.ident}, as asked for.")
-            return runway
-        warnings.append(
-            f"{airport.icao} has no runway {requested}; picked one from the wind instead."
-        )
-    chosen = select_runway(airport, wind.from_deg, wind.speed_kt, min_length_ft)
-    if chosen is None:
-        warnings.append(f"No {role} runway data for {airport.icao}.")
-        return None
+                   notes: list[str], role: str,
+                   profile: Optional[AircraftProfile] = None) -> Optional[Runway]:
+    """Pick a runway, say why, and say when it is not one this aeroplane wants.
 
-    if wind.speed_kt < 3.0:
-        because = ("calm" if wind.source == AirportWind.UNKNOWN
-                   else f"{wind.source} says calm")
-        notes.append(
-            f"{airport.icao} {role} runway {chosen.ident}: {because}, so the "
-            f"longest runway with an ILS."
+    The runway is chosen from the wind, so an unusable one is rare -- but it
+    is exactly what you get when you name one yourself, or at an airport
+    where every runway is short or the wind is across all of them. Saying so
+    is the point: there is nowhere else to go, so the plan proceeds, and the
+    pilot decides whether to.
+    """
+    chosen = None
+    if requested:
+        chosen = airport.runway(requested)
+        if chosen is not None:
+            notes.append(f"{airport.icao} {role} runway {chosen.ident}, as asked for.")
+        else:
+            warnings.append(
+                f"{airport.icao} has no runway {requested}; picked one from "
+                "the wind instead."
+            )
+    if chosen is None:
+        chosen = select_runway(
+            airport, wind.from_deg, wind.speed_kt, min_length_ft,
+            max_crosswind_kt=profile.max_crosswind_kt if profile else 0.0,
+            max_tailwind_kt=profile.max_tailwind_kt if profile else 0.0,
         )
-    else:
-        headwind = wind.speed_kt * math.cos(
-            math.radians(signed_diff_deg(wind.from_deg, chosen.heading_true_deg))
-        )
-        notes.append(
-            f"{airport.icao} {role} runway {chosen.ident}: {wind.source} "
-            f"{wind.from_deg:03.0f} at {wind.speed_kt:.0f} kt, "
-            f"{headwind:+.0f} kt down the runway."
-        )
+        if chosen is None:
+            warnings.append(f"No {role} runway data for {airport.icao}.")
+            return None
+        if wind.speed_kt < 3.0:
+            because = ("calm" if wind.source == AirportWind.UNKNOWN
+                       else f"{wind.source} says calm")
+            notes.append(
+                f"{airport.icao} {role} runway {chosen.ident}: {because}, so the "
+                f"longest runway with an ILS."
+            )
+        else:
+            headwind, _cross = wind_components_kt(chosen, wind.from_deg,
+                                                  wind.speed_kt)
+            notes.append(
+                f"{airport.icao} {role} runway {chosen.ident}: {wind.source} "
+                f"{wind.from_deg:03.0f} at {wind.speed_kt:.0f} kt, "
+                f"{headwind:+.0f} kt down the runway."
+            )
+
+    _check_runway_limits(airport, chosen, wind, min_length_ft, warnings, role,
+                         profile)
     return chosen
+
+
+def _check_runway_limits(airport: Airport, runway: Runway, wind: "AirportWind",
+                         min_length_ft: float, warnings: list[str], role: str,
+                         profile: Optional[AircraftProfile]) -> None:
+    """Say whether this runway is one the aeroplane should be using."""
+    if runway.surface == "synthetic":
+        return                    # an invented runway; already warned about
+    if runway.length_ft and runway.length_ft < min_length_ft:
+        warnings.append(
+            f"{airport.icao}/{runway.ident} is {runway.length_ft:.0f} ft, and "
+            f"{profile.name if profile else 'this aeroplane'} wants at least "
+            f"{min_length_ft:.0f} ft. It will fly the {role}, but the margins "
+            "are yours to judge."
+        )
+    if profile is None or wind.speed_kt < 3.0:
+        return
+    headwind, crosswind = wind_components_kt(runway, wind.from_deg, wind.speed_kt)
+    if crosswind > profile.max_crosswind_kt:
+        warnings.append(
+            f"{airport.icao}/{runway.ident} has {crosswind:.0f} kt of "
+            f"crosswind, above the {profile.max_crosswind_kt:.0f} kt "
+            f"demonstrated for the {profile.icao_type}. Expect to touch down "
+            "off the centreline."
+        )
+    if -headwind > profile.max_tailwind_kt:
+        warnings.append(
+            f"{airport.icao}/{runway.ident} has {-headwind:.0f} kt of "
+            f"tailwind, above the {profile.max_tailwind_kt:.0f} kt limit."
+        )
 
 
 def _drop_backtracks(waypoints: Sequence[Waypoint], start: LatLon,

@@ -234,35 +234,60 @@ def _merge_ils(base: Airport, other: Airport) -> Airport:
     return replace(base, runways=tuple(merged))
 
 
+def wind_components_kt(runway: Runway, wind_from_deg: float,
+                       wind_kt: float) -> tuple[float, float]:
+    """Head- and crosswind on this runway, in knots.
+
+    Headwind is positive down the runway, negative for a tailwind. Crosswind
+    is returned as a magnitude: which side it comes from changes the
+    technique, not whether the runway is usable.
+    """
+    import math
+
+    from ..geo import signed_diff_deg
+
+    angle = math.radians(signed_diff_deg(wind_from_deg, runway.heading_true_deg))
+    return wind_kt * math.cos(angle), abs(wind_kt * math.sin(angle))
+
+
 def select_runway(
     airport: Airport,
     wind_from_deg: float = 0.0,
     wind_kt: float = 0.0,
     min_length_ft: float = 0.0,
     prefer_ils: bool = True,
+    max_crosswind_kt: float = 0.0,
+    max_tailwind_kt: float = 0.0,
 ) -> Optional[Runway]:
     """Pick the runway an airline crew would most likely be given.
 
-    Ranked by headwind component first (a tailwind is heavily penalised, since
-    a tailwind landing is a real limitation rather than a preference), then by
-    whether an ILS is available, then by length.
-    """
-    from ..geo import signed_diff_deg
-    import math
+    Ranked so that a runway the aeroplane can actually use beats one it
+    cannot: long enough first, then inside the crosswind and tailwind the
+    type is cleared for, then by headwind, then by ILS, then by length.
 
-    candidates = [r for r in airport.runways if r.length_ft >= min_length_ft]
-    if not candidates:
-        candidates = list(airport.runways)
+    Those first two are preferences rather than filters, deliberately. An
+    airport where every runway is short, or where the wind is across all of
+    them, still has to produce an answer -- there is nowhere else to go, and
+    refusing to pick would leave the aeroplane with no plan at all. The
+    planner says so out loud instead.
+    """
+    candidates = list(airport.runways)
     if not candidates:
         return None
 
-    def score(rwy: Runway) -> tuple[float, float, float]:
-        angle = math.radians(signed_diff_deg(wind_from_deg, rwy.heading_true_deg))
-        headwind = wind_kt * math.cos(angle)
-        # A tailwind above about 10 kt rules a runway out in practice.
+    def score(rwy: Runway) -> tuple[float, float, float, float, float]:
+        headwind, crosswind = wind_components_kt(rwy, wind_from_deg, wind_kt)
+        long_enough = 1.0 if rwy.length_ft >= min_length_ft else 0.0
+        within_limits = 1.0
+        if max_crosswind_kt and crosswind > max_crosswind_kt:
+            within_limits = 0.0
+        if max_tailwind_kt and headwind < -max_tailwind_kt:
+            within_limits = 0.0
+        # A tailwind is a real limitation rather than a preference.
         wind_score = headwind if headwind >= 0 else headwind * 4.0
         ils_score = 1.0 if (prefer_ils and rwy.has_ils) else 0.0
-        return (round(wind_score, 1), ils_score, rwy.length_ft)
+        return (long_enough, within_limits, round(wind_score, 1), ils_score,
+                rwy.length_ft)
 
     return max(candidates, key=score)
 

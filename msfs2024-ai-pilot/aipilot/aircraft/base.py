@@ -93,6 +93,7 @@ class AircraftAdapter:
         self._switch_clock = 0
         self._steering: Optional[float] = None
         self._brakes: Optional[float] = None
+        self._tug_heading: Optional[float] = None
 
     # -- Introspection -------------------------------------------------------
     def capabilities(self) -> AdapterCapabilities:
@@ -329,6 +330,27 @@ class AircraftAdapter:
         if state.parking_brake != on:
             self.sim.send_event("PARKING_BRAKES")
 
+    def release_brakes_hard(self) -> None:
+        """Let everything go, without asking the simulator what it thinks.
+
+        The state-guarded setters are right almost always: they stop the AI
+        Pilot fighting a switch the pilot moved, and stop a toggle event being
+        sent when the switch is already where it should be. But they trust
+        what the aeroplane reports, and a study-level add-on running its own
+        hydraulics may not report BRAKE PARKING POSITION at all -- in which
+        case "already off" is a guess, the toggle is never sent, and the
+        aeroplane sits at the gate with the thrust up and the brake on, which
+        is exactly what was reported from a 787 at Kennedy.
+
+        So this is the escape hatch: send everything, unconditionally, and
+        forget the cached values so the next ordinary call is not suppressed
+        as a no-op.
+        """
+        self.sim.send_event("PARKING_BRAKES")
+        self.sim.send_event("AXIS_LEFT_BRAKE_SET", 0)
+        self.sim.send_event("AXIS_RIGHT_BRAKE_SET", 0)
+        self._brakes = None
+
     def apply_brakes(self) -> None:
         self.sim.send_event("BRAKES")
 
@@ -360,6 +382,9 @@ class AircraftAdapter:
         if bool(state.pushback_attached) is on:
             return
         self.sim.send_event("TOGGLE_PUSHBACK")
+        if not on:
+            # The tug is gone; the next push starts from no known heading.
+            self._tug_heading = None
         self.log("Pushback started" if on else "Pushback complete")
 
     def set_tug_heading(self, true_deg: float) -> None:
@@ -367,8 +392,20 @@ class AircraftAdapter:
 
         The event takes an angle scaled across the full range of a 32-bit
         unsigned integer rather than in degrees.
+
+        Sent once per heading, not once per cycle. A real pushback showed
+        this event going out three hundred and thirty times in eighty-four
+        seconds -- four times a second, for a value that never changed. The
+        heading is a decision, and re-taking it every quarter of a second is
+        at best noise on the connection and at worst an instruction to the
+        tug to start again.
         """
-        raw = int(normalize_deg(true_deg) / 360.0 * 4294967296.0) & 0xFFFFFFFF
+        target = normalize_deg(true_deg)
+        if self._tug_heading is not None and \
+                abs(_angle_gap(target, self._tug_heading)) < 1.0:
+            return
+        self._tug_heading = target
+        raw = int(target / 360.0 * 4294967296.0) & 0xFFFFFFFF
         self.sim.send_event("KEY_TUG_HEADING", raw)
 
     # -- Lights and cabin signs ----------------------------------------------

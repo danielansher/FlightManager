@@ -424,3 +424,210 @@ def test_a_missing_runway_heading_is_measured_not_guessed(tmp_path):
     reciprocal = abs(by_ident["15"].heading_true_deg
                      - by_ident["33"].heading_true_deg)
     assert abs(reciprocal - 180.0) < 1.0, "the two ends must be reciprocal"
+
+
+# --- Runway limits -----------------------------------------------------------
+def _field(icao, lat, lon, runways):
+    from aipilot.navdata.base import Airport, Runway
+
+    return Airport(icao, icao, LatLon(lat, lon), 0.0, runways=tuple(
+        Runway(ident, LatLon(lat, lon), heading, length, 0.0, width_ft=150.0)
+        for ident, heading, length in runways))
+
+
+@pytest.fixture
+def two_fields():
+    big = _field("KJFK", 40.64, -73.78, [("04L", 31.0, 12079), ("22R", 211.0, 12079)])
+    short = _field("KTEB", 40.85, -74.06, [("06", 58.0, 6013), ("24", 238.0, 6013)])
+    return big, short
+
+
+def _warned(plan, phrase):
+    return any(phrase in w for w in plan.warnings)
+
+
+def test_a_runway_too_short_for_the_aeroplane_is_flagged(two_fields):
+    """Nothing checked this at all: the minimum was one global number, so an
+    A380 could be planned into a six-thousand-foot runway in silence."""
+    from aipilot.perf.profiles import get_profile
+    from aipilot.route.planner import plan_route
+
+    big, short = two_fields
+    plan = plan_route(big, short, get_profile("a380-800"), None)
+    assert _warned(plan, "wants at least 9800 ft")
+
+    # The same field is unremarkable for something that fits.
+    fine = plan_route(big, short, get_profile("a320neo"), None)
+    assert not _warned(fine, "wants at least")
+
+
+def test_a_crosswind_beyond_the_demonstrated_figure_is_flagged(two_fields):
+    from aipilot.perf.profiles import get_profile
+    from aipilot.route.planner import AirportWind, plan_route
+
+    big, short = two_fields
+    plan = plan_route(short, big, get_profile("b787-10"), None,
+                      arrival_wind=AirportWind(121.0, 40.0, "the METAR"))
+    assert _warned(plan, "kt of crosswind")
+    assert _warned(plan, "33 kt demonstrated")
+
+
+def test_a_tailwind_beyond_the_limit_is_flagged(two_fields):
+    from aipilot.perf.profiles import get_profile
+    from aipilot.route.planner import AirportWind, plan_route
+
+    big, short = two_fields
+    plan = plan_route(short, big, get_profile("b787-10"), None,
+                      arrival_runway="22R",
+                      arrival_wind=AirportWind(31.0, 20.0, "the METAR"))
+    assert _warned(plan, "kt of tailwind")
+
+
+def test_a_runway_it_can_use_beats_one_it_cannot(two_fields):
+    """Length and limits rank above the wind: a slight headwind is not worth
+    a runway the aeroplane does not fit on."""
+    from aipilot.navdata.base import select_runway
+
+    mixed = _field("XXXX", 50.0, 0.0, [
+        ("09", 90.0, 12000),      # long, slight tailwind
+        ("27", 270.0, 5000),      # short, into wind
+    ])
+    chosen = select_runway(mixed, wind_from_deg=270.0, wind_kt=8.0,
+                           min_length_ft=9000.0, max_tailwind_kt=10.0)
+    assert chosen.ident == "09", "took the short runway for eight knots of wind"
+
+
+def test_limits_never_leave_a_flight_with_no_runway():
+    """An airport where every runway is short, or the wind is across all of
+    them, still has to produce an answer -- there is nowhere else to go."""
+    from aipilot.navdata.base import select_runway
+
+    tiny = _field("YYYY", 50.0, 0.0, [("09", 90.0, 3000), ("27", 270.0, 3000)])
+    chosen = select_runway(tiny, wind_from_deg=180.0, wind_kt=45.0,
+                           min_length_ft=9000.0, max_crosswind_kt=33.0,
+                           max_tailwind_kt=10.0)
+    assert chosen is not None
+
+
+# --- Reported from real flights ----------------------------------------------
+def test_the_takeoff_roll_does_not_slam_the_rudder():
+    """A 787 at Kennedy swung hard left the moment the thrust came up.
+
+    The "lined up" check accepted two hundred feet off the centreline and the
+    roll then tried to correct that with a gain of twenty-five per nautical
+    mile -- near full rudder, on the first cycle, at takeoff power.
+    """
+    from aipilot.autopilot.controller import (
+        TAKEOFF_STEER_LIMIT,
+        TAKEOFF_STEER_RATE_PER_S,
+        TAKEOFF_STEER_XTK_GAIN_PER_NM,
+    )
+
+    hundred_feet = 100.0 / 6076.11548556
+    assert abs(-hundred_feet * TAKEOFF_STEER_XTK_GAIN_PER_NM) < 0.15, \
+        "a hundred feet off should be a nudge, not a swerve"
+    assert TAKEOFF_STEER_LIMIT <= 0.4
+    assert TAKEOFF_STEER_RATE_PER_S <= 0.5, "it can still snap over in one cycle"
+
+
+def test_being_well_off_the_centreline_is_not_lined_up(navdata):
+    """Generosity about what counts as lined up is not a kindness when the
+    next thing that happens is takeoff power."""
+    from aipilot.aircraft.registry import build_adapter
+    from aipilot.autopilot.controller import AIPilot, PilotOptions
+    from aipilot.geo import destination_point, normalize_deg
+    from aipilot.perf.profiles import get_profile
+    from aipilot.route.planner import plan_route
+    from aipilot.sim.mock import MockSim
+
+    profile = get_profile("b787-10")
+    origin, destination = navdata.airport("EGLL"), navdata.airport("EGCC")
+    plan = plan_route(origin, destination, profile, navdata)
+    runway = plan.departure_runway
+    sim = MockSim(runway.threshold, runway.heading_true_deg, origin.elevation_ft)
+    adapter, _ = build_adapter("b787-10", sim)
+    pilot = AIPilot(sim, adapter, profile, plan, PilotOptions(taxi=False))
+
+    beside = destination_point(runway.threshold,
+                               normalize_deg(runway.heading_true_deg + 90.0),
+                               200.0 / 6076.11548556)
+    sim.state.lat, sim.state.lon = beside.lat, beside.lon
+    assert pilot._runway_under_aircraft(sim.state) is None, \
+        "two hundred feet off the centreline was accepted as lined up"
+
+    sim.state.lat, sim.state.lon = runway.threshold.lat, runway.threshold.lon
+    assert pilot._runway_under_aircraft(sim.state) is not None
+
+
+def test_the_tug_heading_is_sent_once_per_heading():
+    """A real pushback sent it 330 times in 84 seconds for a value that never
+    changed."""
+    from aipilot.aircraft.registry import build_adapter
+    from aipilot.sim.mock import MockSim
+
+    sim = MockSim(LatLon(51.0, 0.0))
+    adapter, _ = build_adapter("b787-10", sim)
+    for _ in range(100):
+        adapter.set_tug_heading(271.0)
+    adapter.set_tug_heading(95.0)
+    sent = [e for e, _v in sim.events_sent if e == "KEY_TUG_HEADING"]
+    assert len(sent) == 2, f"sent {len(sent)} times for two headings"
+
+
+def test_thrust_going_nowhere_releases_the_brakes_anyway():
+    """A 787 sat at a Kennedy gate with the thrust up for two and a half
+    minutes. The parking brake was on, and the release is guarded on what the
+    aeroplane reports -- which an add-on running its own hydraulics may not
+    report at all, so it was never sent."""
+    from aipilot.aircraft.registry import build_adapter
+    from aipilot.sim.mock import MockSim
+
+    sim = MockSim(LatLon(51.0, 0.0))
+    adapter, _ = build_adapter("b787-10", sim)
+    sim.state.parking_brake = False            # what the aeroplane claims
+    adapter.set_parking_brake(False, sim.state)
+    assert not [e for e, _v in sim.events_sent if e == "PARKING_BRAKES"], \
+        "the guard should suppress this, which is the whole problem"
+
+    adapter.release_brakes_hard()
+    events = [e for e, _v in sim.events_sent]
+    assert "PARKING_BRAKES" in events
+    assert "AXIS_LEFT_BRAKE_SET" in events and "AXIS_RIGHT_BRAKE_SET" in events
+
+
+def test_the_same_database_is_not_opened_twice(tmp_path, monkeypatch):
+    """On Windows %APPDATA% is ~/AppData/Roaming, so both search roots named
+    the same file and every lookup ran against it twice."""
+    from aipilot.navdata import littlenavmap
+
+    roaming = tmp_path / "AppData" / "Roaming" / "ABarthel" / "little_navmap_db"
+    roaming.mkdir(parents=True)
+    (roaming / "little_navmap_msfs.sqlite").write_bytes(b"")
+
+    monkeypatch.setenv("APPDATA", str(tmp_path / "AppData" / "Roaming"))
+    monkeypatch.setattr(os.path, "expanduser", lambda _p: str(tmp_path))
+    found = littlenavmap.default_database_paths("2020")
+    assert len(found) == 1, f"the same database was found {len(found)} times"
+
+
+def test_the_replay_shows_how_the_aeroplane_moved(tmp_path):
+    """The trace always held heading, track and every rudder command; there
+    was simply no way to look at them together."""
+    from aipilot.debug import analyse, format_track, read_records
+
+    records = [
+        {"t": "header", "at": 0},
+        {"t": "sample", "at": 0.0, "phase": "takeoff", "pos": [40.64, -73.78],
+         "hdg": 226.0, "want_hdg": 220.0, "trk": 226.0, "gs": 12.0, "ias": 12.0,
+         "alt": 13.0},
+        {"t": "command", "at": 0.1, "phase": "takeoff", "kind": "event",
+         "name": "RUDDER_SET", "value": -9830},
+        {"t": "sample", "at": 0.5, "phase": "takeoff", "pos": [40.641, -73.781],
+         "hdg": 219.0, "want_hdg": 220.0, "trk": 219.0, "gs": 30.0, "ias": 30.0,
+         "alt": 13.0},
+    ]
+    path = tmp_path / "t.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in records))
+    text = format_track(analyse(str(path)), read_records(str(path)))
+    assert "-0.60" in text, "the rudder that was sent is not in the replay"
+    assert "226" in text and "220" in text

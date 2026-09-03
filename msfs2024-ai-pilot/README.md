@@ -209,6 +209,19 @@ taken from a SimBrief release, and why FlightRadar24 is not one of the sources.
 
 ## When something goes wrong
 
+Reading a trace back:
+
+```bash
+python -m aipilot debug-report logs/flight-....jsonl            # the summary
+python -m aipilot debug-report logs/flight-....jsonl --track taxi takeoff
+```
+
+`--track` replays the flight cycle by cycle: where the aeroplane was, which way
+it was pointing, which way it was being *told* to point, where it was actually
+going, and the rudder that was sent. That is the view for anything on the
+ground, where the question is always whether the steering matched the geometry.
+
+
 Fly it again with `--debug` and it writes down what happened — what the
 aeroplane was doing, what the AI Pilot asked for, and every event it sent to the
 simulator. Then:

@@ -76,6 +76,21 @@ class AircraftProfile:
     gear_extend_speed_kt: float = 250.0
     descent_angle_deg: float = 3.0
 
+    # Limits that decide whether a runway is usable at all.
+    #: Demonstrated crosswind, not a certified limit -- it is the strongest
+    #: crosswind the type was flight-tested in, and what an operator's own
+    #: limit is normally set from.
+    max_crosswind_kt: float = 35.0
+    #: Tailwind above which a landing is a real limitation rather than a
+    #: preference. Ten knots is the common airframe figure; fifteen is
+    #: approved for some types on some runways.
+    max_tailwind_kt: float = 10.0
+    #: The shortest runway to plan this type onto. A rule of thumb covering
+    #: takeoff at a normal weight and landing with reserves, not a computed
+    #: performance figure -- there is no weight, temperature or slope here to
+    #: compute one from.
+    min_runway_ft: float = 6000.0
+
     # Behaviour
     autoland_capable: bool = True
     autothrottle: bool = True
@@ -162,6 +177,7 @@ B787_10 = _register(AircraftProfile(
     max_climb_rate_fpm=2400.0, max_descent_rate_fpm=3000.0,
     takeoff_flaps_index=2, landing_flaps_index=5,
     flaps=_boeing_flaps(), gear_extend_speed_kt=250.0,
+    max_crosswind_kt=33.0, min_runway_ft=7800.0,
     notes="Default MSFS 2024 aeroplane. Flies entirely on standard autopilot "
           "events, so it needs no WASM module.",
 ))
@@ -174,6 +190,7 @@ B787_9 = _register(replace(
 
 A350_900 = _register(AircraftProfile(
     key="a350-900",
+    max_crosswind_kt=40.0, min_runway_ft=8200.0,
     vmo_kt=340.0, max_mach=0.89,
     name="Airbus A350-900 (iniBuilds)",
     icao_type="A359",
@@ -197,6 +214,7 @@ A350_1000 = _register(replace(
 
 A380_800 = _register(AircraftProfile(
     key="a380-800",
+    max_crosswind_kt=40.0, min_runway_ft=9800.0,
     vmo_kt=340.0, max_mach=0.89,
     name="Airbus A380-800",
     icao_type="A388",
@@ -216,6 +234,7 @@ A380_800 = _register(AircraftProfile(
 
 A330_900 = _register(AircraftProfile(
     key="a330-900",
+    max_crosswind_kt=38.0, min_runway_ft=7800.0,
     vmo_kt=330.0, max_mach=0.86,
     name="Airbus A330-900neo (Headwind)",
     icao_type="A339",
@@ -233,6 +252,7 @@ A330_900 = _register(AircraftProfile(
 
 A320_NEO = _register(AircraftProfile(
     key="a320neo",
+    max_crosswind_kt=38.0, min_runway_ft=5500.0,
     vmo_kt=350.0, max_mach=0.82,
     name="Airbus A320neo",
     icao_type="A20N",
@@ -251,6 +271,7 @@ A320_NEO = _register(AircraftProfile(
 
 GENERIC_JET = _register(AircraftProfile(
     key="generic",
+    max_crosswind_kt=35.0, min_runway_ft=6000.0,
     name="Generic airliner",
     icao_type="ZZZZ",
     flaps=_boeing_flaps(),

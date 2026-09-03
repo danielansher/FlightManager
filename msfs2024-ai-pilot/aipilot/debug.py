@@ -598,6 +598,72 @@ def format_report(report: Report) -> str:
     return "\n".join(lines)
 
 
+def format_track(report: Report, records: list[dict],
+                 phases: tuple[str, ...] = ()) -> str:
+    """A cycle-by-cycle replay of how the aeroplane actually moved.
+
+    The summary says what looked wrong; this says what happened. It is the
+    view you want for anything on the ground, where the question is always
+    the same -- which way was it pointing, which way was it being told to
+    point, what was it being steered, and did any of it move the aeroplane.
+
+    Steering commands are folded in from the command trace, so the rudder
+    that was sent appears on the line of the sample it was sent during,
+    rather than in a separate list that has to be cross-referenced by hand.
+    """
+    samples = [r for r in records if r.get("t") == "sample"]
+    if phases:
+        wanted = {p.lower() for p in phases}
+        samples = [s for s in samples if str(s.get("phase", "")).lower() in wanted]
+    if not samples:
+        return "No samples in that part of the flight."
+
+    # The last steering value commanded at or before each sample.
+    steers: list[tuple[float, float]] = []
+    for record in records:
+        if record.get("t") == "command" and record.get("name") == "RUDDER_SET":
+            steers.append((_num(record.get("at")),
+                           _num(record.get("value")) / 16383.0))
+
+    def steering_at(when: float) -> Optional[float]:
+        latest = None
+        for at, value in steers:
+            if at <= when + 1e-6:
+                latest = value
+            else:
+                break
+        return latest
+
+    lines = [
+        "",
+        "Replay" + (f" ({', '.join(phases)})" if phases else ""),
+        "-" * 78,
+        "    time  phase      lat        lon       hdg  cmd   trk    gs   ias"
+        "  steer  alt",
+    ]
+    for sample in samples:
+        at = _num(sample.get("at"))
+        position = sample.get("pos") or [0.0, 0.0]
+        steer = steering_at(at)
+        lines.append(
+            f"  {at:6.1f}  {str(sample.get('phase', ''))[:9]:<9} "
+            f"{_num(position[0]):9.5f} {_num(position[1]):10.5f} "
+            f"{_num(sample.get('hdg')):5.0f} "
+            f"{_num(sample.get('want_hdg')):5.0f} "
+            f"{_num(sample.get('trk')):5.0f} "
+            f"{_num(sample.get('gs')):5.1f} "
+            f"{_num(sample.get('ias')):5.0f} "
+            + (f"{steer:+6.2f}" if steer is not None else "     -")
+            + f" {_num(sample.get('alt')):6.0f}")
+    lines.append(
+        f"  {len(samples)} samples. hdg is where it was pointing, cmd where it "
+        "was told to point,")
+    lines.append(
+        "  trk where it was actually going, steer the rudder that was sent "
+        "(-1 left, +1 right).")
+    return "\n".join(lines)
+
+
 def default_path(origin: str = "", destination: str = "") -> str:
     """Where a trace goes when you do not say."""
     stamp = time.strftime("%Y%m%d-%H%M%S")

@@ -114,6 +114,11 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("path", help="the .jsonl file written by --debug")
     report.add_argument("--events", action="store_true",
                         help="also print the whole event log")
+    report.add_argument("--track", nargs="*", metavar="PHASE",
+                        help="replay how the aeroplane moved, cycle by cycle: "
+                             "heading, commanded heading, track, speed and the "
+                             "rudder that was sent. Name phases to narrow it, "
+                             'e.g. --track taxi takeoff')
 
     find = subparsers.add_parser(
         "find-simconnect",
@@ -664,7 +669,7 @@ def command_lvars(args) -> int:
 
 
 def command_debug_report(args) -> int:
-    from .debug import analyse, format_report
+    from .debug import analyse, format_report, format_track, read_records
 
     try:
         report = analyse(args.path)
@@ -676,6 +681,8 @@ def command_debug_report(args) -> int:
         return 1
 
     print(format_report(report))
+    if args.track is not None:
+        print(format_track(report, read_records(args.path), tuple(args.track)))
     if args.events:
         print()
         print("Event log")

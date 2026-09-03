@@ -155,6 +155,25 @@ STABILISATION_XTK_NM = 0.08
 #: enough to fly back towards the departure airport.
 REJOIN_SLACK_NM = 40.0
 
+#: Keeping straight on the takeoff roll. The rudder's authority grows with
+#: the square of the speed, so the gain is scaled by the ratio of this
+#: reference speed to the actual one -- full gain at a walking pace, a small
+#: fraction of it at rotation.
+TAKEOFF_STEER_REFERENCE_KT = 40.0
+TAKEOFF_STEER_HEADING_GAIN = 0.05
+#: Per nautical mile off the centreline. Six is about a tenth of full rudder
+#: for a hundred feet, which straightens a displaced aeroplane over a few
+#: hundred yards instead of swinging it off the side.
+TAKEOFF_STEER_XTK_GAIN_PER_NM = 6.0
+TAKEOFF_STEER_LIMIT = 0.35
+TAKEOFF_STEER_RATE_PER_S = 0.25
+
+#: Thrust open and the aeroplane going nowhere. Below this speed it is not
+#: moving; after this long it is being held by something.
+STUCK_SPEED_KT = 0.8
+STUCK_PATIENCE_S = 12.0
+STUCK_RETRY_S = 8.0
+
 #: How often to ask the tug to disconnect, and how long to wait before giving
 #: up on the simulator ever reporting that it has. The interval matters: the
 #: event is a toggle, and the state that says whether it worked arrives at
@@ -330,6 +349,13 @@ class AIPilot:
         self._runway_check_warned = False
         self._ground_started = False
         #: When the tug was first asked to leave, and when we last asked.
+        #: The steering value being held, so it can be rate-limited rather
+        #: than stepped straight to whatever the geometry asks for.
+        self._steering_command = 0.0
+        #: Thrust-up-but-stationary watchdog.
+        self._stuck_since: Optional[float] = None
+        self._last_brake_release = -1e9
+        self._stuck_releases = 0
         self._tug_release_started: Optional[float] = None
         self._tug_release_sent = -TUG_RELEASE_INTERVAL_S
         self._overspeed = False
@@ -671,18 +697,10 @@ class AIPilot:
         self.adapter.set_autothrottle(True)
         self.adapter.takeoff_thrust()
         if runway is not None and state.on_ground:
-            # Keep straight on the runway with the nosewheel until flying.
-            # Cross-track as well as heading: holding the runway heading while
-            # displaced simply runs parallel to the centreline off the edge.
-            length_nm = runway.length_ft / FEET_PER_NM
-            far_end = destination_point(runway.threshold,
-                                        runway.heading_true_deg, length_nm)
-            offset = cross_track_nm(state.position, runway.threshold, far_end)
-            error = signed_diff_deg(runway.heading_true_deg, state.heading_true_deg)
-            command = error * 0.08 - offset * 25.0
-            self.adapter.set_steering(max(-0.6, min(0.6, command)))
+            self._steer_down_the_runway(state, runway)
         elif not state.on_ground:
             self.adapter.set_steering(0.0)
+            self._steering_command = 0.0
         self.adapter.set_flaps(self._commanded_flaps, state)
         if runway is not None:
             self.adapter.set_heading_true(runway.heading_true_deg, state)
@@ -692,6 +710,53 @@ class AIPilot:
             self.adapter.select_heading_mode(state)
             self.adapter.set_altitude(self.plan.cruise_altitude_ft)
             self.adapter.select_altitude_mode(state)
+
+    def _steer_down_the_runway(self, state: SimState, runway) -> None:
+        """Keep straight on the roll, gently.
+
+        Reported from a real takeoff: the aeroplane swung hard left the
+        moment the thrust came up and left the runway. Three things
+        compounded.
+
+        The rudder is not a nosewheel tiller. Its authority grows with the
+        square of the speed, so a deflection that barely moves a stationary
+        aeroplane will take it off the side at rotation speed -- the gain has
+        to fall as the speed rises, not stay fixed.
+
+        The cross-track gain was twenty-five per nautical mile, which is a
+        third of full deflection for a hundred feet of offset. That is a
+        correction for an aeroplane that has drifted, not for one that has
+        merely been placed slightly off, and being placed slightly off is
+        normal: the threshold in the navigation data comes from a scenery
+        scan, and with third-party scenery it can sit tens of yards from
+        where the simulator actually puts the aeroplane.
+
+        And it could slam. There was no rate limit, so the first cycle could
+        command two thirds of full rudder from nothing.
+        """
+        length_nm = runway.length_ft / FEET_PER_NM
+        far_end = destination_point(runway.threshold, runway.heading_true_deg,
+                                    length_nm)
+        offset = cross_track_nm(state.position, runway.threshold, far_end)
+        error = signed_diff_deg(runway.heading_true_deg, state.heading_true_deg)
+
+        # Rudder authority rises with speed, so the gain comes down with it.
+        # Below taxi speed there is barely any authority and the number is
+        # academic; by rotation the same deflection is enormous.
+        speed = max(20.0, state.ground_speed_kt)
+        authority = min(1.0, (TAKEOFF_STEER_REFERENCE_KT / speed) ** 2)
+        wanted = (error * TAKEOFF_STEER_HEADING_GAIN
+                  - offset * TAKEOFF_STEER_XTK_GAIN_PER_NM) * authority
+        wanted = max(-TAKEOFF_STEER_LIMIT, min(TAKEOFF_STEER_LIMIT, wanted))
+
+        # Rate limited, so it eases on rather than snapping over.
+        step = TAKEOFF_STEER_RATE_PER_S * self._last_dt
+        previous = self._steering_command
+        self._steering_command = max(previous - step, min(previous + step, wanted))
+        self.adapter.set_steering(self._steering_command)
+        # So a replay of the roll shows what it was aiming at, not a zero.
+        self.status.commanded_heading_deg = runway.heading_true_deg
+        self.status.cross_track_nm = offset
 
     def _fly_lateral(self, state: SimState):
         approach_mode = self.phase in (Phase.APPROACH, Phase.LANDING)
@@ -1100,6 +1165,46 @@ class AIPilot:
         else:
             self.adapter.set_wheel_brakes(0.0)
             self.adapter.set_throttle_percent(max(6.0, 22.0 - excess * 6.0))
+            self._watch_for_a_held_brake(state)
+
+    def _watch_for_a_held_brake(self, state: SimState) -> None:
+        """Notice thrust going nowhere, and let the brakes off properly.
+
+        Reported from a 787 at Kennedy: after the pushback it sat with the
+        thrust up and did not move for two and a half minutes. The parking
+        brake was on, and the setter that should have released it is guarded
+        on what the aeroplane reports -- which for an add-on running its own
+        hydraulics may be nothing at all, so the release was never sent.
+
+        Rather than trust the report, watch the outcome. Thrust open and the
+        aeroplane not moving is a fact that needs no interpretation.
+        """
+        if state.ground_speed_kt > STUCK_SPEED_KT:
+            self._stuck_since = None
+            return
+        if self._stuck_since is None:
+            self._stuck_since = self.elapsed_s
+            return
+        if self.elapsed_s - self._stuck_since < STUCK_PATIENCE_S:
+            return
+        if self.elapsed_s - self._last_brake_release < STUCK_RETRY_S:
+            return
+
+        self._last_brake_release = self.elapsed_s
+        self._stuck_releases += 1
+        self.adapter.release_brakes_hard()
+        if self._stuck_releases == 1:
+            self._event(
+                "Thrust is up but the aeroplane is not moving, so the brakes "
+                "are being released again without asking the aeroplane "
+                "whether they are on.", "warning")
+        elif self._stuck_releases == 4:
+            self._event(
+                "Still not moving after releasing the brakes several times. "
+                "Something on this aeroplane is holding it that standard "
+                "SimConnect events do not reach -- a chocks or a hydraulics "
+                "state on an add-on, most likely. Release it by hand and this "
+                "will carry on.", "error")
 
     def _line_up(self, state: SimState) -> None:
         """Creep forward on the centreline until properly aligned.
@@ -1320,9 +1425,16 @@ class AIPilot:
             along = along_track_nm(state.position, runway.threshold, far_end)
             if not -0.15 <= along <= length_nm + 0.05:
                 continue
-            # Half the runway width plus a margin: enough to be lined up
-            # slightly off centre, not enough to be on a parallel taxiway.
-            tolerance = (runway.width_ft / 2.0 + 120.0) / 6076.11548556
+            # Half the runway width: enough to be lined up slightly off
+            # centre, not enough to be on the grass beside it.
+            #
+            # This used to allow another 120 ft on top, which meant an
+            # aeroplane could be accepted as lined up while two hundred feet
+            # off the centreline -- and then the takeoff roll tried to
+            # correct that at full thrust and drove it off the side. Being
+            # generous about what counts as lined up is not a kindness when
+            # the next thing that happens is takeoff power.
+            tolerance = max(runway.width_ft / 2.0, 75.0) / FEET_PER_NM
             if abs(cross_track_nm(state.position, runway.threshold, far_end)) > tolerance:
                 continue
             if abs(signed_diff_deg(state.heading_true_deg,
