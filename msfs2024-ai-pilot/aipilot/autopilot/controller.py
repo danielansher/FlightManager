@@ -183,6 +183,17 @@ TAXI_STEER_RATE_PER_S = 0.8
 #: start repeating.
 PUSHBACK_TURN_CANDIDATES = 4
 
+#: How much dearer a degree the aeroplane turns itself is than a degree the
+#: tug turns it. They are not alike. The tug turns an aeroplane that is being
+#: steered by a man watching the wingtips, in the space the stand allows for
+#: exactly that; the aeroplane turns itself on an apron under its own power
+#: with a 200 ft wingspan and no way to see anything. Scored as equal, a push
+#: of 58 degrees that left the aeroplane 101 degrees to make itself beat a push
+#: of 178 degrees that left it 51 -- and off GC 31 at Kennedy the aeroplane
+#: took that 101 degrees straight into the neighbouring stands, wedging 82 ft
+#: from GC 33 with the thrust up.
+PUSHBACK_OPENING_WEIGHT = 4.0
+
 #: Thrust open and the aeroplane going nowhere. Below this speed it is not
 #: moving; after this long it is being held by something.
 STUCK_SPEED_KT = 0.8
@@ -1071,7 +1082,7 @@ class AIPilot:
             opening = opening_turn(candidate)
             if opening is None:
                 continue
-            cost = abs(candidate) + abs(opening)
+            cost = abs(candidate) + PUSHBACK_OPENING_WEIGHT * abs(opening)
             if best_cost is None or cost < best_cost:
                 best, best_cost = candidate, cost
         return best
