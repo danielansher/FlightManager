@@ -48,8 +48,10 @@ from ..route.taxi import runway_entry_point, simplify
 from .ground import (
     PUSHBACK_MAX_NM,
     PUSHBACK_MIN_NM,
+    PUSHBACK_STRAIGHT_NM,
     PushbackGuidance,
     TaxiGuidance,
+    pushback_distance_for,
     pushback_needed,
 )
 from .lateral import LateralGuidance
@@ -953,10 +955,16 @@ class AIPilot:
             # way to get to it.
             facing = None
             if runway is not None:
-                push = max(PUSHBACK_MIN_NM, min(PUSHBACK_MAX_NM, distance))
+                # Judged from where the tug will have finished pushing straight
+                # and be about to start turning -- not from the end of the
+                # whole push. The turn happens about that point, so that is
+                # where the heading to turn onto has to be measured from.
+                # Measuring it from the far end of a push whose length is not
+                # even known yet gave a heading for somewhere the aeroplane
+                # would not be.
                 end = destination_point(state.position,
                                         normalize_deg(state.heading_true_deg + 180.0),
-                                        push)
+                                        PUSHBACK_STRAIGHT_NM)
                 onward = self.ground_network.route(
                     end, runway_entry_point(runway, self.ground_network))
                 if onward:
@@ -964,6 +972,11 @@ class AIPilot:
                     if len(onward) > 1 and \
                             distance_nm(end, onward[0]) < PUSHBACK_MIN_NM:
                         facing = initial_bearing_deg(onward[0], onward[1])
+            if facing is not None:
+                # Long enough to actually deliver the turn, rather than
+                # stopping part way round and leaving the taxi to unwind it.
+                distance = max(distance, pushback_distance_for(
+                    signed_diff_deg(facing, state.heading_true_deg)))
             self.pushback = PushbackGuidance(state.position,
                                              state.heading_true_deg, distance,
                                              facing)
@@ -971,10 +984,12 @@ class AIPilot:
             self.adapter.set_parking_brake(False, state)
             self._tug_seen_attached = False
             self.adapter.set_pushback(True, state)
-            self.adapter.set_tug_heading(self.pushback.final_heading)
+            self.adapter.set_tug_heading(self.pushback.tug_heading)
             self._event(
-                f"Pushing back {self.pushback.target_distance_nm * FEET_PER_NM:.0f} ft, "
-                f"turning onto {self.pushback.final_heading:.0f} degrees.")
+                f"Pushing back {self.pushback.target_distance_nm * FEET_PER_NM:.0f} ft: "
+                f"{self.pushback.straight_distance_nm * FEET_PER_NM:.0f} ft straight "
+                f"to clear the stand, then turning onto "
+                f"{self.pushback.final_heading:.0f} degrees.")
             self._enter_phase(Phase.PUSHBACK, "pushback")
             return True
 
@@ -1104,7 +1119,9 @@ class AIPilot:
         if state.pushback_attached and not self._tug_seen_attached:
             self._tug_seen_attached = True
             self.adapter.forget_tug_heading()
-        self.adapter.set_tug_heading(self.pushback.final_heading)
+        # Straight while clearing the stand, then the heading to finish on.
+        # The value guard passes the change through when the turn begins.
+        self.adapter.set_tug_heading(self.pushback.tug_heading)
         self.adapter.set_wheel_brakes(0.0)
 
     def _release_tug(self, state: SimState) -> None:

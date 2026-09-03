@@ -462,7 +462,11 @@ def test_a_stand_the_taxiways_cannot_reach_says_so_and_stops(network):
     steers nothing and commands nothing, and the phase machine will not run
     backwards, so the aeroplane stands on the apron for the rest of the day
     with no explanation."""
-    stranded = destination_point(STAND, RUNWAY_HEADING + 90.0, 0.20)
+    # Beyond anything a push can reach: PUSHBACK_MAX_NM of push plus
+    # MAX_JOIN_DISTANCE_NM of join is 0.29 nm. This was 0.20, which stopped
+    # being out of reach when the push was lengthened to fit a full turn --
+    # the stand had not moved, the aeroplane simply got further.
+    stranded = destination_point(STAND, RUNWAY_HEADING + 90.0, 0.35)
     pilot, sim = _fly(stranded, NOSE_IN_HEADING, network=network, seconds=400)
 
     assert pilot.phase is Phase.PREFLIGHT, \
@@ -471,3 +475,74 @@ def test_a_stand_the_taxiways_cannot_reach_says_so_and_stops(network):
     messages = " ".join(e.message.lower() for e in pilot.log)
     assert "could not find a way across the taxiways" in messages
     assert "taxi out" in messages, "it never said what the pilot should do"
+
+
+def test_a_taxi_route_has_no_leg_shorter_than_the_aeroplane():
+    """Around a terminal the graph has nodes closer together than an airliner
+    is long, and simplify judged a turn on its angle alone. The kept points
+    came out 17 to 80 ft apart, so the steering target moved on before the turn
+    onto the last one had finished and the nosewheel went right, left, right,
+    left about a second apart. Out of a Kennedy gate: 31 turns in 1.45 nm and
+    19 legs under 150 ft."""
+    from aipilot.route.taxi import MIN_LEG_NM, simplify
+
+    # A long run made of 40 ft steps that alternate 25 degrees either side:
+    # every one of them is a "turn" by angle, none is a leg by length.
+    step_nm = 40.0 / 6076.12
+    points = [LatLon(40.6402, -73.7807)]
+    heading = 69.0
+    for index in range(60):
+        heading += 25.0 if index % 2 == 0 else -25.0
+        points.append(destination_point(points[-1], heading, step_nm))
+
+    reduced = simplify(points)
+    legs = [distance_nm(a, b) for a, b in zip(reduced, reduced[1:])]
+    too_short = [leg * 6076.12 for leg in legs if leg < MIN_LEG_NM * 0.95]
+    assert not too_short, (
+        f"{len(too_short)} of {len(legs)} legs are shorter than the aeroplane: "
+        f"{', '.join(f'{leg:.0f} ft' for leg in too_short[:6])}")
+
+
+def test_a_bigger_turn_off_the_stand_gets_a_longer_push():
+    """The distance and the heading were chosen independently, and the worst
+    case got the shortest push: any turn past the limit meant "nose-in, needs a
+    tug" and was answered with the minimum. Asked for 182 ft and 180 degrees,
+    the tug managed 56 degrees of it and left the aeroplane across the apron
+    for the taxi to unwind."""
+    from aipilot.autopilot.ground import pushback_distance_for
+
+    quarter = pushback_distance_for(90.0)
+    about_face = pushback_distance_for(180.0)
+    assert about_face > quarter, \
+        "a 180 degree turn needs more room than a 90, not the same or less"
+
+    # 1.3 deg/s at 2.6 kt is 3.4 ft per degree, measured on the aeroplane.
+    turn_room_ft = (about_face - quarter) * 6076.12
+    assert 250.0 < turn_room_ft < 380.0, \
+        f"the extra 90 degrees was given {turn_room_ft:.0f} ft to turn in"
+
+
+def test_the_tug_pushes_straight_before_it_turns():
+    """A tug pulls the aeroplane clear of the stand before it swings it. Handed
+    the final heading at the outset it turns from the moment it takes the
+    weight, which drags the tail across the neighbouring stand."""
+    from aipilot.autopilot.ground import PushbackGuidance
+
+    start = LatLon(40.6402, -73.7807)
+    push = PushbackGuidance(start, 247.0, target_distance_nm=0.12,
+                            final_heading_deg=67.0,
+                            straight_distance_nm=0.025)
+
+    assert push.tug_heading == 247.0, "it turned before clearing the stand"
+    assert not push.turning
+
+    # Ten feet at a time, straight back, until the straight leg is behind us.
+    position, step_nm = start, 10.0 / 6076.12
+    for _ in range(400):
+        position = destination_point(position, push.push_direction_deg, step_nm)
+        push.advance(position)
+        if push.turning:
+            break
+
+    assert push.turning, "the turn never began"
+    assert push.tug_heading == 67.0, "the tug was never given the final heading"

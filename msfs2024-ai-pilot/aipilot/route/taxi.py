@@ -203,11 +203,32 @@ class GroundNetwork:
         return path
 
 
-def simplify(points: Iterable[LatLon], tolerance_deg: float = 4.0) -> list[LatLon]:
+#: The shortest leg worth steering, in nautical miles -- about 220 ft.
+#:
+#: The graph welds endpoints within sixteen feet of each other and splits
+#: paths every 0.08 nm, which around a terminal leaves nodes closer together
+#: than an airliner is long: a 787-9 is 206 ft. A leg shorter than the
+#: aeroplane cannot be flown as a leg. The steering target reaches the far end
+#: before the turn onto the near end has finished, so the nosewheel is still
+#: going one way when it is asked to go the other, and a run of them reads as
+#: a zig-zag -- right, left, right, left, about a second apart. Measured out of
+#: a Kennedy gate: 31 turns in 1.45 nm, 19 legs under 150 ft, one of them 17 ft
+#: with a 157 degree turn on it.
+MIN_LEG_NM = 0.036
+
+
+def simplify(points: Iterable[LatLon], tolerance_deg: float = 4.0,
+             min_leg_nm: float = MIN_LEG_NM) -> list[LatLon]:
     """Drop points that lie on a straight run, keeping the turns.
 
     A* returns a point every eighty metres, which is far more than a steering
     controller needs and makes every tiny scenery kink look like a turn.
+
+    Angle alone is not enough to decide that, though. A turn sharp enough to
+    keep is still not steerable if it arrives before the aeroplane has finished
+    the last one, so a turn landing within ``min_leg_nm`` of the previous one
+    moves that turn along rather than adding another beside it. The path keeps
+    its corners and loses the stutter between them.
     """
     points = list(points)
     if len(points) < 3:
@@ -216,9 +237,20 @@ def simplify(points: Iterable[LatLon], tolerance_deg: float = 4.0) -> list[LatLo
     for previous, point, following in zip(points, points[1:], points[2:]):
         incoming = initial_bearing_deg(previous, point)
         outgoing = initial_bearing_deg(point, following)
-        if abs((outgoing - incoming + 180.0) % 360.0 - 180.0) >= tolerance_deg:
-            out.append(point)
-    out.append(points[-1])
+        if abs((outgoing - incoming + 180.0) % 360.0 - 180.0) < tolerance_deg:
+            continue
+        if distance_nm(out[-1], point) < min_leg_nm:
+            # Too close behind the last turn to be steered as its own leg.
+            # Carry the corner forward rather than stacking another beside it
+            # -- except off the start, which stays where the aeroplane is.
+            if len(out) > 1:
+                out[-1] = point
+            continue
+        out.append(point)
+    if len(out) > 1 and distance_nm(out[-1], points[-1]) < min_leg_nm:
+        out[-1] = points[-1]
+    else:
+        out.append(points[-1])
     return out
 
 

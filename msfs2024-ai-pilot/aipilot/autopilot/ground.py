@@ -75,7 +75,26 @@ WAYPOINT_REACHED_NM = 0.010
 #: How far to push back before trying to taxi, and the most that will ever be
 #: attempted before giving up and asking for help.
 PUSHBACK_MIN_NM = 0.03
-PUSHBACK_MAX_NM = 0.12
+#: Enough for the straight leg plus the longest turn a tug is ever asked for:
+#: 152 ft clear of the stand and 612 ft to come through 180 degrees, which is
+#: 764 ft. Not a round number picked for room -- widening this also widens what
+#: counts as a stand the taxiways can reach at all.
+PUSHBACK_MAX_NM = 0.15
+
+#: How far the aeroplane goes straight back before the tug begins to turn it.
+#: A tug does not start swinging the moment it takes the weight: it pulls the
+#: aeroplane clear of the stand and the jetway first, and only then turns it to
+#: face the taxiway. Turning from the stand drags a wingtip through whatever is
+#: parked alongside.
+PUSHBACK_STRAIGHT_NM = 0.025
+
+#: Travel needed for each degree the tug turns the aeroplane, in nautical
+#: miles. Measured on a Horizon 787-9 in MSFS 2020: the tug turned at about
+#: 1.3 degrees a second while pushing at 2.6 kt, which is 3.4 ft per degree.
+#: Without this the distance and the heading were chosen independently, and a
+#: push of 182 ft was asked to deliver a 180 degree turn -- it managed 56, and
+#: left the aeroplane across the apron pointing nowhere useful.
+PUSHBACK_NM_PER_TURN_DEG = 3.4 / 6076.12
 
 
 @dataclass
@@ -229,7 +248,8 @@ class PushbackGuidance:
 
     def __init__(self, start: LatLon, heading_true_deg: float,
                  target_distance_nm: float = PUSHBACK_MIN_NM,
-                 final_heading_deg: Optional[float] = None) -> None:
+                 final_heading_deg: Optional[float] = None,
+                 straight_distance_nm: float = PUSHBACK_STRAIGHT_NM) -> None:
         self.start = start
         self.heading = normalize_deg(heading_true_deg)
         #: The heading to leave the aeroplane on. A real pushback does not just
@@ -241,6 +261,10 @@ class PushbackGuidance:
                               if final_heading_deg is not None else self.heading)
         self.target_distance_nm = max(PUSHBACK_MIN_NM,
                                       min(PUSHBACK_MAX_NM, target_distance_nm))
+        #: How far to go straight back before the tug starts turning. Never
+        #: more than the push itself, or the turn would never begin.
+        self.straight_distance_nm = min(straight_distance_nm,
+                                        self.target_distance_nm)
         self._done = False
         self._travelled = 0.0
         self._last: Optional[LatLon] = None
@@ -249,6 +273,25 @@ class PushbackGuidance:
     def push_direction_deg(self) -> float:
         """The direction the aeroplane travels: backwards along its heading."""
         return normalize_deg(self.heading + 180.0)
+
+    @property
+    def tug_heading(self) -> float:
+        """The heading to give the tug right now.
+
+        Straight back until the aeroplane is clear of the stand, and only then
+        the heading it is to end up on. Handing the tug the final heading at
+        the outset makes it turn from the moment it takes the weight, which
+        swings the tail across the neighbouring stand and puts a wingtip where
+        the jetway is.
+        """
+        if self._travelled < self.straight_distance_nm:
+            return self.heading
+        return self.final_heading
+
+    @property
+    def turning(self) -> bool:
+        """Whether the straight leg is behind us and the turn has begun."""
+        return self._travelled >= self.straight_distance_nm
 
     @property
     def travelled_nm(self) -> float:
@@ -289,6 +332,20 @@ class PushbackGuidance:
 PUSHBACK_TURN_LIMIT_DEG = 100.0
 
 
+def pushback_distance_for(turn_deg: float,
+                          straight_nm: float = PUSHBACK_STRAIGHT_NM) -> float:
+    """How far to push: clear of the stand, then far enough to turn.
+
+    The two used to be picked independently -- a fixed distance, and whatever
+    heading the taxi wanted -- so nothing noticed when the distance could not
+    deliver the heading. The worst case is also the one that got the shortest
+    push: a turn past the limit meant "nose-in, needs a tug", and was answered
+    with the minimum distance, when it is exactly the turn needing the most
+    room.
+    """
+    return straight_nm + abs(turn_deg) * PUSHBACK_NM_PER_TURN_DEG
+
+
 def pushback_needed(position: LatLon, network, heading_true_deg: float = 0.0,
                     first_leg: Optional[LatLon] = None) -> tuple[bool, float]:
     """Whether a pushback is needed, and roughly how far.
@@ -316,5 +373,5 @@ def pushback_needed(position: LatLon, network, heading_true_deg: float = 0.0,
         turn = abs(signed_diff_deg(initial_bearing_deg(position, first_leg),
                                    heading_true_deg))
         if turn > PUSHBACK_TURN_LIMIT_DEG:
-            return (True, PUSHBACK_MIN_NM)
+            return (True, pushback_distance_for(turn))
     return (False, 0.0)
