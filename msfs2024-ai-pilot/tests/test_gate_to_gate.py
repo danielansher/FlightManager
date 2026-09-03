@@ -372,7 +372,14 @@ def test_it_stays_on_the_pavement_taxiing_out(navdata, networks):
             worst = max(worst, deviation)
         if pilot.phase in (Phase.TAKEOFF, Phase.CLIMB):
             break
-    assert len(samples) > 40, "barely taxied at all"
+    # Only a guard against "it never really taxied". The count it can expect
+    # fell when simplify stopped keeping every scenery kink: the same route is
+    # a handful of points now rather than dozens, so there are fewer legs to
+    # sample while flying it. The tracking assertions below are unchanged, and
+    # it still has to reach the runway.
+    assert len(samples) > 10, "barely taxied at all"
+    assert pilot.phase in (Phase.TAKEOFF, Phase.CLIMB), \
+        f"never reached the runway, ended in {pilot.phase.value}"
     typical = sorted(samples)[len(samples) // 2]
     assert typical < 0.010, f"typically {typical * FEET_PER_NM:.0f} ft off its route"
     assert worst < 0.08, f"cut a corner by {worst * FEET_PER_NM:.0f} ft"

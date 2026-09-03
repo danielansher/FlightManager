@@ -46,14 +46,17 @@ from ..units import FEET_PER_NM, mach_to_tas, tas_to_cas
 from ..geo import initial_bearing_deg, normalize_deg
 from ..route.taxi import runway_entry_point, simplify
 from .ground import (
+    BEHIND_ME_DEG,
     PUSHBACK_MAX_NM,
     PUSHBACK_MIN_NM,
     PUSHBACK_STRAIGHT_NM,
     PushbackGuidance,
     TaxiGuidance,
     pushback_distance_for,
+    pushback_end_point,
     pushback_needed,
 )
+from .ground import WAYPOINT_REACHED_NM
 from .lateral import LateralGuidance
 from .phases import EventLog, FlightEvent, Phase, phase_rank
 from .vertical import VerticalGuidance, should_start_descent
@@ -169,6 +172,16 @@ TAKEOFF_STEER_HEADING_GAIN = 0.05
 TAKEOFF_STEER_XTK_GAIN_PER_NM = 6.0
 TAKEOFF_STEER_LIMIT = 0.35
 TAKEOFF_STEER_RATE_PER_S = 0.25
+
+#: How fast the nosewheel may be commanded across its range while taxiing, per
+#: second. Looser than the takeoff roll, where a twitch is a swerve at speed,
+#: but still a physical undercarriage rather than an instant one.
+TAXI_STEER_RATE_PER_S = 0.8
+
+#: How many candidate pushback turns to weigh up. Each costs one route
+#: across the airport, so this is not free, and past a handful the answers
+#: start repeating.
+PUSHBACK_TURN_CANDIDATES = 4
 
 #: Thrust open and the aeroplane going nowhere. Below this speed it is not
 #: moving; after this long it is being held by something.
@@ -953,30 +966,17 @@ class AIPilot:
             # taxiway means coming off the stand pointing along a taxiway it
             # has not reached yet, and then swinging ninety degrees the wrong
             # way to get to it.
-            facing = None
+            facing, turn = None, 0.0
             if runway is not None:
-                # Judged from where the tug will have finished pushing straight
-                # and be about to start turning -- not from the end of the
-                # whole push. The turn happens about that point, so that is
-                # where the heading to turn onto has to be measured from.
-                # Measuring it from the far end of a push whose length is not
-                # even known yet gave a heading for somewhere the aeroplane
-                # would not be.
-                end = destination_point(state.position,
-                                        normalize_deg(state.heading_true_deg + 180.0),
-                                        PUSHBACK_STRAIGHT_NM)
-                onward = self.ground_network.route(
-                    end, runway_entry_point(runway, self.ground_network))
-                if onward:
-                    facing = initial_bearing_deg(end, onward[0])
-                    if len(onward) > 1 and \
-                            distance_nm(end, onward[0]) < PUSHBACK_MIN_NM:
-                        facing = initial_bearing_deg(onward[0], onward[1])
+                turn = self._best_pushback_turn(state, runway)
+                if turn is not None:
+                    facing = normalize_deg(state.heading_true_deg + turn)
+                else:
+                    turn = 0.0
             if facing is not None:
                 # Long enough to actually deliver the turn, rather than
                 # stopping part way round and leaving the taxi to unwind it.
-                distance = max(distance, pushback_distance_for(
-                    signed_diff_deg(facing, state.heading_true_deg)))
+                distance = max(distance, pushback_distance_for(turn))
             self.pushback = PushbackGuidance(state.position,
                                              state.heading_true_deg, distance,
                                              facing)
@@ -997,6 +997,81 @@ class AIPilot:
             self._enter_phase(Phase.TAXI, "taxiing to the runway")
             return True
         return False
+
+    def _best_pushback_turn(self, state: SimState, runway) -> Optional[float]:
+        """How far to turn the aeroplane during the push, in degrees.
+
+        Which way to leave the aeroplane facing and where the push ends depend
+        on each other: the heading sets how far the tug must go to deliver it,
+        the distance sets where the aeroplane ends up, and that sets which way
+        the first taxi leg lies. Reading the heading off a guessed end point
+        cost 124 degrees of taxi spent undoing the push.
+
+        Solving it as a fixed point does not work. The bearing to the first
+        route point jumps as the end point moves across the network, so the
+        iteration has no stable solution: damped or undamped it lands anywhere
+        between -197 and +82 degrees on the same stand, depending only on the
+        damping. So this does not iterate to a solution -- it generates a few
+        self-consistent candidates and keeps the one that turns the aeroplane
+        least in total, counting both the push and the taxi turn that follows.
+        A choice between measured options, which is well defined whether or not
+        a fixed point exists.
+
+        Aimed along the taxiway the aeroplane will join rather than at the
+        point where it joins it: a stretch of pavement holds still, a bearing
+        to a node does not.
+        """
+        entry = runway_entry_point(runway, self.ground_network)
+        heading = state.heading_true_deg
+
+        def end_for(turn: float) -> LatLon:
+            return pushback_end_point(state.position, heading, turn,
+                                      total_nm=pushback_distance_for(turn))
+
+        def opening_turn(turn: float) -> Optional[float]:
+            """The turn the taxi will really make once the tug lets go.
+
+            Not the direction of the first leg. The taxi steers at a waypoint,
+            not along a line, and the first one it does not skip may be abeam:
+            a push ending 77 ft off the centreline left the aeroplane pointed
+            within 7 degrees of the leg and still facing 90 degrees away from
+            the point it was about to chase. Aligning with the leg looked
+            right and drove the aeroplane sideways off the stand.
+            """
+            end, facing = end_for(turn), normalize_deg(heading + turn)
+            for point in simplify(self.ground_network.route(end, entry)):
+                if distance_nm(end, point) < WAYPOINT_REACHED_NM:
+                    continue                       # already close enough
+                bearing = initial_bearing_deg(end, point)
+                if abs(signed_diff_deg(bearing, facing)) > BEHIND_ME_DEG:
+                    continue                       # behind, the taxi drops it
+                return signed_diff_deg(bearing, facing)
+            return None
+
+        candidates, turn = [0.0], 0.0
+        for _ in range(PUSHBACK_TURN_CANDIDATES):
+            route = simplify(self.ground_network.route(end_for(turn), entry))
+            if len(route) < 2:
+                break
+            turn = signed_diff_deg(initial_bearing_deg(route[0], route[1]),
+                                   heading)
+            candidates.append(turn)
+            end = end_for(turn)
+            for point in simplify(self.ground_network.route(end, entry)):
+                if distance_nm(end, point) >= WAYPOINT_REACHED_NM:
+                    candidates.append(
+                        signed_diff_deg(initial_bearing_deg(end, point), heading))
+                    break
+
+        best, best_cost = None, None
+        for candidate in candidates:
+            opening = opening_turn(candidate)
+            if opening is None:
+                continue
+            cost = abs(candidate) + abs(opening)
+            if best_cost is None or cost < best_cost:
+                best, best_cost = candidate, cost
+        return best
 
     def _start_taxi(self, state: SimState) -> bool:
         """Work out a route across the taxiways to the departure runway."""
@@ -1191,7 +1266,17 @@ class AIPilot:
                 self._line_up(state)
             return
         self.status.message = command.reason
-        self.adapter.set_steering(command.steering)
+        # Rate limited, as the takeoff roll already is. A nosewheel takes a
+        # second or two to swing lock to lock; commanded straight from the
+        # guidance it moved 0.62 of full deflection inside a single quarter
+        # second cycle, which no undercarriage does. Reported from the
+        # cockpit as the wheels going left, right, left, right about a second
+        # apart while the aeroplane was travelling in a straight line.
+        step = TAXI_STEER_RATE_PER_S * self._last_dt
+        previous = self._steering_command
+        self._steering_command = max(previous - step,
+                                     min(previous + step, command.steering))
+        self.adapter.set_steering(self._steering_command)
         excess = state.ground_speed_kt - command.target_speed_kt
         if excess > 1.5:
             self.adapter.set_throttle_percent(0.0)

@@ -165,7 +165,14 @@ def test_it_stays_on_the_pavement(network):
             measured += 1
         if pilot.phase in (Phase.TAKEOFF, Phase.CLIMB):
             break
-    assert measured > 40, "barely taxied at all"
+    # This guard is only here to catch "it never really taxied", and the count
+    # it can expect fell when simplify stopped keeping every scenery kink: this
+    # route is four points now rather than a dozen, and one of them sequences
+    # without ever being the leg under test. That it taxied is asserted
+    # directly below, by where it ended up.
+    assert measured > 10, "barely taxied at all"
+    assert pilot.phase in (Phase.TAKEOFF, Phase.CLIMB), \
+        f"never got off the ground, ended in {pilot.phase.value}"
     # Two numbers, because they say different things. Typical deviation is the
     # tracking quality and should be small. The worst case is a corner cut: on
     # a sharp turn a large aeroplane at taxi speed cannot follow the corner
@@ -546,3 +553,54 @@ def test_the_tug_pushes_straight_before_it_turns():
 
     assert push.turning, "the turn never began"
     assert push.tug_heading == 67.0, "the tug was never given the final heading"
+
+
+def test_a_turning_push_does_not_end_where_a_straight_one_would():
+    """Once the tug turns, the aeroplane is travelling a curve and for a large
+    turn it comes back on itself. Treating the end as a straight run put it
+    nowhere near where it went: 764 ft of push through 174 degrees moved a 787
+    just 418 ft from the stand, on a bearing 68 degrees off the one it set off
+    on. The onward route was then read from a point it never reached, and the
+    taxi opened by turning 124 degrees to undo the push."""
+    from aipilot.autopilot.ground import pushback_end_point
+    from aipilot.geo import initial_bearing_deg
+
+    start, heading = LatLon(40.640164, -73.780675), 247.0   # GC 31 at Kennedy
+
+    # Measured on the aeroplane: 418 ft from the stand, bearing 135.
+    end = pushback_end_point(start, heading, 174.0)
+    assert 380.0 < distance_nm(start, end) * 6076.12 < 460.0, \
+        f"ended {distance_nm(start, end) * 6076.12:.0f} ft out, the flight made 418"
+    assert abs(signed_diff_deg(initial_bearing_deg(start, end), 135.0)) < 12.0, \
+        f"bore {initial_bearing_deg(start, end):.0f}, the flight made 135"
+
+    # A straight push is the special case, not the general one.
+    straight = pushback_end_point(start, heading, 0.0)
+    assert abs(signed_diff_deg(initial_bearing_deg(start, straight), 67.0)) < 1.0
+    assert distance_nm(start, end) > distance_nm(start, straight) * 1.5, \
+        "a turning push and a straight one cannot end in the same place"
+
+
+def test_a_push_longer_than_its_turn_carries_on_straight():
+    """Whatever push is left once the turn is done is spent going straight
+    backwards on the new heading. Left out of the model, a 763 ft push that
+    needed only 580 ft to turn put the predicted end 63 ft and 20 degrees off
+    where the aeroplane actually stopped -- and the taxi, routed from that
+    imaginary point, opened by turning 155 degrees."""
+    from aipilot.autopilot.ground import pushback_end_point, pushback_distance_for
+    from aipilot.geo import initial_bearing_deg
+
+    start, heading, turn = LatLon(40.640164, -73.780675), 247.0, -126.3
+
+    # Sized to its own turn, there is no tail and the two agree.
+    sized = pushback_distance_for(turn)
+    assert distance_nm(pushback_end_point(start, heading, turn),
+                       pushback_end_point(start, heading, turn,
+                                          total_nm=sized)) * 6076.12 < 5.0
+
+    # Pushed past that, the aeroplane ends somewhere else. Measured on the
+    # aeroplane: 763 ft of push ended 501 ft out on a bearing of 2.
+    overshot = pushback_end_point(start, heading, turn, total_nm=763.0 / 6076.12)
+    assert 470.0 < distance_nm(start, overshot) * 6076.12 < 530.0, \
+        f"{distance_nm(start, overshot) * 6076.12:.0f} ft out, the flight made 501"
+    assert abs(signed_diff_deg(initial_bearing_deg(start, overshot), 2.0)) < 12.0

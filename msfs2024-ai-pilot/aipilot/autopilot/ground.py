@@ -24,6 +24,7 @@ from typing import Optional
 from ..geo import (
     LatLon,
     cross_track_nm,
+    destination_point,
     distance_nm,
     initial_bearing_deg,
     normalize_deg,
@@ -332,6 +333,47 @@ class PushbackGuidance:
 PUSHBACK_TURN_LIMIT_DEG = 100.0
 
 
+#: Radius of the arc the tug swings the aeroplane round, in nautical miles.
+#: Travel per degree and radius are the same measurement seen two ways.
+PUSHBACK_TURN_RADIUS_NM = PUSHBACK_NM_PER_TURN_DEG * 180.0 / math.pi
+
+
+def pushback_end_point(start: LatLon, heading_true_deg: float, turn_deg: float,
+                       straight_nm: float = PUSHBACK_STRAIGHT_NM,
+                       total_nm: Optional[float] = None) -> LatLon:
+    """Where the aeroplane finishes: straight back, then round an arc.
+
+    Not "straight back for the whole push". Once the tug starts turning, the
+    aeroplane is travelling a curve, and for a large turn it comes back on
+    itself: a 764 ft push through 174 degrees moved a 787 just 418 ft from the
+    stand, on a bearing 68 degrees off the one it set off on. Taking the end as
+    a straight run put it nowhere near, so the onward route was read from a
+    point the aeroplane never went, and the taxi opened with a 124 degree turn
+    to undo what the tug had just done.
+
+    Checked against that flight: this predicts 425 ft on a bearing of 133, and
+    the aeroplane recorded 418 ft on 135.
+    """
+    back = normalize_deg(heading_true_deg + 180.0)
+    end = destination_point(start, back, straight_nm)
+    if abs(turn_deg) >= 0.5:
+        # The chord of the arc, which bisects the turn.
+        chord = 2.0 * PUSHBACK_TURN_RADIUS_NM * math.sin(
+            math.radians(abs(turn_deg)) / 2.0)
+        end = destination_point(end, normalize_deg(back + turn_deg / 2.0), chord)
+    # Any push left over once the turn is done carries on straight, backwards
+    # along the new heading. Left out, this was worth 20 degrees of error in
+    # where the aeroplane was predicted to be: a 763 ft push that only needed
+    # 580 ft to turn spent the last 183 ft going straight somewhere the model
+    # said it would not be, and the taxi opened with a 155 degree turn.
+    if total_nm is not None:
+        tail = total_nm - straight_nm - abs(turn_deg) * PUSHBACK_NM_PER_TURN_DEG
+        if tail > 0.0:
+            end = destination_point(
+                end, normalize_deg(heading_true_deg + turn_deg + 180.0), tail)
+    return end
+
+
 def pushback_distance_for(turn_deg: float,
                           straight_nm: float = PUSHBACK_STRAIGHT_NM) -> float:
     """How far to push: clear of the stand, then far enough to turn.
@@ -373,5 +415,12 @@ def pushback_needed(position: LatLon, network, heading_true_deg: float = 0.0,
         turn = abs(signed_diff_deg(initial_bearing_deg(position, first_leg),
                                    heading_true_deg))
         if turn > PUSHBACK_TURN_LIMIT_DEG:
-            return (True, pushback_distance_for(turn))
+            # A floor, not the answer. How far to push depends on the turn
+            # actually chosen, which is decided against the taxiways and is
+            # not known here -- this angle is only "is the route behind us".
+            # Returning a distance sized from *this* angle looks helpful and
+            # is not: it stood at 763 ft while the turn chosen needed 580, and
+            # the aeroplane spent the difference going straight past where it
+            # was meant to stop.
+            return (True, PUSHBACK_MIN_NM)
     return (False, 0.0)
