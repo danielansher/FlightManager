@@ -954,7 +954,9 @@ class AIPilot:
         first_leg = None
         if runway is not None and self.ground_network is not None:
             route = self.ground_network.route(
-                state.position, runway_entry_point(runway, self.ground_network))
+                state.position,
+                runway_entry_point(runway, self.ground_network,
+                                   from_position=state.position))
             if len(route) > 1:
                 first_leg = route[1]
         needed, distance = pushback_needed(state.position, self.ground_network,
@@ -1021,7 +1023,8 @@ class AIPilot:
         point where it joins it: a stretch of pavement holds still, a bearing
         to a node does not.
         """
-        entry = runway_entry_point(runway, self.ground_network)
+        entry = runway_entry_point(runway, self.ground_network,
+                                   from_position=state.position)
         heading = state.heading_true_deg
 
         def end_for(turn: float) -> LatLon:
@@ -1078,7 +1081,8 @@ class AIPilot:
         runway = self.plan.departure_runway
         if self.ground_network is None or runway is None:
             return False
-        entry = runway_entry_point(runway, self.ground_network)
+        entry = runway_entry_point(runway, self.ground_network,
+                                   from_position=state.position)
         route = self.ground_network.route(state.position, entry)
         if not route:
             self._event(

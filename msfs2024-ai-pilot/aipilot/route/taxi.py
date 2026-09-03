@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import heapq
 import math
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
@@ -254,21 +255,66 @@ def simplify(points: Iterable[LatLon], tolerance_deg: float = 4.0,
     return out
 
 
+#: How far from a threshold to look for a holding point.
+ENTRY_SEARCH_NM = 0.6
+
+
 def runway_entry_point(runway: Runway, network: Optional[GroundNetwork],
-                       hold_short_nm: float = 0.04) -> LatLon:
+                       hold_short_nm: float = 0.04,
+                       from_position: Optional[LatLon] = None) -> LatLon:
     """Where to taxi to for departure: the runway threshold, from the side.
 
     Aiming at the threshold itself is right in principle, but the threshold
     point sits on the runway centreline at the very end, and the taxi network
     usually meets the runway a little way along it. Taking the nearest network
     node to the threshold gives the actual holding point.
+
+    Nearest is not enough on its own. Scenery leaves fragments -- short runs of
+    taxiway joined to each other and to nothing else -- and the node closest to
+    a threshold is sometimes in one. At Boston the nearest node to 04R sat in a
+    piece of graph that no stand on the airport could reach, and 22L, the other
+    end of the same strip, could not reach it either. Every departure from 04R
+    then found no route, never started a taxi, and said nothing about why: in a
+    sweep of eight stands, all eight failed on 04R and all eight worked on 22L.
+
+    So when it is known where the aeroplane is starting from, the holding point
+    is the nearest one it can actually reach.
     """
     if network is None or not network.usable:
         return runway.threshold
-    entry = network.nearest_node(runway.threshold, limit_nm=0.6)
-    if entry is None:
+    if from_position is None:
+        entry = network.nearest_node(runway.threshold, limit_nm=ENTRY_SEARCH_NM)
+        if entry is None:
+            return runway.threshold
+        return network.nodes[entry].position
+
+    nearby = sorted(
+        (node for node in network.nodes
+         if distance_nm(runway.threshold, node.position) <= ENTRY_SEARCH_NM),
+        key=lambda node: distance_nm(runway.threshold, node.position))
+    if not nearby:
         return runway.threshold
-    return network.nodes[entry].position
+
+    # Which nodes can be reached at all, answered once by walking the graph.
+    # Routing to each candidate in turn would search the whole network again
+    # every time it failed, and at Boston the first twenty-six nodes by
+    # distance were all in the same dead fragment -- the nearest one that could
+    # actually be reached was 529 ft from the threshold.
+    origin = network.nearest_node(from_position, limit_nm=MAX_JOIN_DISTANCE_NM)
+    if origin is None:
+        return nearby[0].position
+    reachable = {origin}
+    queue = deque([origin])
+    while queue:
+        node = queue.popleft()
+        for edge in network.nodes[node].edges:
+            if edge[0] not in reachable:
+                reachable.add(edge[0])
+                queue.append(edge[0])
+    for node in nearby:
+        if node.index in reachable:
+            return node.position
+    return nearby[0].position
 
 
 def build_network(layout: Optional[GroundLayout]) -> Optional[GroundNetwork]:

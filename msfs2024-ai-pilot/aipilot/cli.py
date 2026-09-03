@@ -761,7 +761,9 @@ def command_taxi(args) -> int:
     print(f"{icao}: {len(layout.taxi_paths)} segments, "
           f"{len(network.nodes)} junctions, {len(stands)} stands")
     print(f"From stand {stand.name} to runway {runway.ident}")
-    route = network.route(stand.position, runway_entry_point(runway, network))
+    route = network.route(stand.position,
+                          runway_entry_point(runway, network,
+                                             from_position=stand.position))
     if not route:
         raise SystemExit("No route across the taxiways between those two.")
     reduced = simplify(route)
