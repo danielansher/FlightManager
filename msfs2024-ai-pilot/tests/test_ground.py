@@ -484,30 +484,43 @@ def test_a_stand_the_taxiways_cannot_reach_says_so_and_stops(network):
     assert "taxi out" in messages, "it never said what the pilot should do"
 
 
-def test_a_taxi_route_has_no_leg_shorter_than_the_aeroplane():
-    """Around a terminal the graph has nodes closer together than an airliner
-    is long, and simplify judged a turn on its angle alone. The kept points
-    came out 17 to 80 ft apart, so the steering target moved on before the turn
-    onto the last one had finished and the nosewheel went right, left, right,
-    left about a second apart. Out of a Kennedy gate: 31 turns in 1.45 nm and
-    19 legs under 150 ft."""
-    from aipilot.route.taxi import MIN_LEG_NM, simplify
+def test_simplifying_a_route_keeps_it_on_the_taxiway():
+    """The route is built from the scenery's own centrelines and sits on them
+    to within a foot. Everything that ever put the aeroplane on the grass was
+    introduced by thinning that path afterwards.
 
-    # A long run made of 40 ft steps that alternate 25 degrees either side:
-    # every one of them is a "turn" by angle, none is a leg by length.
+    This replaces a test asserting that no leg was shorter than the aeroplane.
+    That rule -- carry a corner forward rather than keep two close together --
+    was added to stop a zig-zag which turned out to be an inverted rudder axis,
+    and it chorded whole curves: measured against Kennedy's own taxiways it put
+    the route up to 139 ft off the pavement, and the aeroplane spent a third of
+    the taxi outside the taxiway edge. The rule is gone, so its test goes with
+    it; what matters was never the length of a leg but how far the thinned path
+    strays from the real one, which is what is asserted here.
+    """
+    from aipilot.route.taxi import SIMPLIFY_TOLERANCE_NM, simplify
+
+    # A curve made of shallow kinks: every angle small, every leg short, and
+    # the accumulated deviation across the lot is what actually matters.
     step_nm = 40.0 / 6076.12
     points = [LatLon(40.6402, -73.7807)]
     heading = 69.0
-    for index in range(60):
-        heading += 25.0 if index % 2 == 0 else -25.0
+    for _ in range(40):
+        heading += 4.0
         points.append(destination_point(points[-1], heading, step_nm))
 
     reduced = simplify(points)
-    legs = [distance_nm(a, b) for a, b in zip(reduced, reduced[1:])]
-    too_short = [leg * 6076.12 for leg in legs if leg < MIN_LEG_NM * 0.95]
-    assert not too_short, (
-        f"{len(too_short)} of {len(legs)} legs are shorter than the aeroplane: "
-        f"{', '.join(f'{leg:.0f} ft' for leg in too_short[:6])}")
+    assert 2 <= len(reduced) < len(points)
+    assert reduced[0] == points[0] and reduced[-1] == points[-1]
+
+    worst = 0.0
+    for point in points:
+        nearest = min(_distance_to_segment(point, a, b)
+                      for a, b in zip(reduced, reduced[1:]))
+        worst = max(worst, nearest)
+    assert worst <= SIMPLIFY_TOLERANCE_NM * 1.05, (
+        f"thinning moved the route {worst * 6076.12:.0f} ft off the path it "
+        f"came from, against a tolerance of {SIMPLIFY_TOLERANCE_NM * 6076.12:.0f} ft")
 
 
 def test_a_bigger_turn_off_the_stand_gets_a_longer_push():

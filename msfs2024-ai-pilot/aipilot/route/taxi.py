@@ -21,7 +21,8 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
-from ..geo import LatLon, destination_point, distance_nm, initial_bearing_deg
+from ..geo import (LatLon, along_track_nm, cross_track_nm, destination_point,
+                   distance_nm, initial_bearing_deg)
 from ..navdata.base import GroundLayout, Runway, TaxiPath
 
 #: How close two segment endpoints must be to count as the same junction.
@@ -204,55 +205,84 @@ class GroundNetwork:
         return path
 
 
-#: The shortest leg worth steering, in nautical miles -- about 220 ft.
+#: How far the thinned route may stray from the path A* actually found.
+#: Twenty feet, against a taxiway 82 ft wide at Kennedy: comfortably inside the
+#: pavement even before the aeroplane's own tracking error is added.
 #:
-#: The graph welds endpoints within sixteen feet of each other and splits
-#: paths every 0.08 nm, which around a terminal leaves nodes closer together
-#: than an airliner is long: a 787-9 is 206 ft. A leg shorter than the
-#: aeroplane cannot be flown as a leg. The steering target reaches the far end
-#: before the turn onto the near end has finished, so the nosewheel is still
-#: going one way when it is asked to go the other, and a run of them reads as
-#: a zig-zag -- right, left, right, left, about a second apart. Measured out of
-#: a Kennedy gate: 31 turns in 1.45 nm, 19 legs under 150 ft, one of them 17 ft
-#: with a 157 degree turn on it.
-MIN_LEG_NM = 0.036
+#: This is a perpendicular distance, which is the thing that matters and the
+#: thing an angle threshold cannot bound. The route is built from the scenery's
+#: own centrelines and sits on them to within a foot; everything that put the
+#: aeroplane on the grass was introduced by thinning it.
+SIMPLIFY_TOLERANCE_NM = 20.0 / 6076.11548556
 
 
-def simplify(points: Iterable[LatLon], tolerance_deg: float = 4.0,
-             min_leg_nm: float = MIN_LEG_NM) -> list[LatLon]:
-    """Drop points that lie on a straight run, keeping the turns.
+def _furthest_from_chord(points: list[LatLon], first: int,
+                         last: int) -> tuple[int, float]:
+    """The point between two others that lies furthest off the line joining
+    them, and how far off it is."""
+    start, end = points[first], points[last]
+    span = distance_nm(start, end)
+    worst_index, worst = first, -1.0
+    for index in range(first + 1, last):
+        point = points[index]
+        if span < 1e-9:
+            offset = distance_nm(point, start)
+        else:
+            along = along_track_nm(point, start, end)
+            if along < 0.0:
+                offset = distance_nm(point, start)
+            elif along > span:
+                offset = distance_nm(point, end)
+            else:
+                offset = abs(cross_track_nm(point, start, end))
+        if offset > worst:
+            worst_index, worst = index, offset
+    return worst_index, worst
 
-    A* returns a point every eighty metres, which is far more than a steering
-    controller needs and makes every tiny scenery kink look like a turn.
 
-    Angle alone is not enough to decide that, though. A turn sharp enough to
-    keep is still not steerable if it arrives before the aeroplane has finished
-    the last one, so a turn landing within ``min_leg_nm`` of the previous one
-    moves that turn along rather than adding another beside it. The path keeps
-    its corners and loses the stutter between them.
+def simplify(points: Iterable[LatLon],
+             tolerance_nm: float = SIMPLIFY_TOLERANCE_NM) -> list[LatLon]:
+    """Thin the path without letting it leave the taxiway.
+
+    Ramer-Douglas-Peucker: keep the point furthest off the chord, recurse on
+    each side, stop when nothing is more than ``tolerance_nm`` off. What it
+    bounds is the perpendicular distance from the original path, which is the
+    same quantity as "how far from the centreline", so the guarantee can be
+    stated in feet: no point of the route is further off the taxiway than the
+    tolerance.
+
+    The previous version thinned on the angle at each vertex instead. That
+    bounds the error at a vertex and nothing at all in between, and the two are
+    not related: a curved taxiway made of shallow kinks has a small angle at
+    every one of them and an arbitrarily large deviation across the lot. It
+    also had a minimum leg length that moved a corner forward rather than
+    dropping it, which chorded whole curves. Measured against the scenery's own
+    centrelines at Kennedy, that put the route up to 139 ft off the pavement and
+    the aeroplane spent 34% of the taxi outside the taxiway edge -- while a
+    sweep scoring it against its own polyline reported eight stands out of
+    eight. The raw path from A* is on the pavement to within a foot; all of
+    that damage was done here.
+
+    The minimum-leg rule existed to stop a zig-zag that turned out to be an
+    inverted rudder axis. With the sign fixed it costs nothing to remove: the
+    nosewheel reverses no more often without it.
     """
     points = list(points)
     if len(points) < 3:
         return points
-    out = [points[0]]
-    for previous, point, following in zip(points, points[1:], points[2:]):
-        incoming = initial_bearing_deg(previous, point)
-        outgoing = initial_bearing_deg(point, following)
-        if abs((outgoing - incoming + 180.0) % 360.0 - 180.0) < tolerance_deg:
+    keep = [False] * len(points)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(points) - 1)]
+    while stack:
+        first, last = stack.pop()
+        if last <= first + 1:
             continue
-        if distance_nm(out[-1], point) < min_leg_nm:
-            # Too close behind the last turn to be steered as its own leg.
-            # Carry the corner forward rather than stacking another beside it
-            # -- except off the start, which stays where the aeroplane is.
-            if len(out) > 1:
-                out[-1] = point
-            continue
-        out.append(point)
-    if len(out) > 1 and distance_nm(out[-1], points[-1]) < min_leg_nm:
-        out[-1] = points[-1]
-    else:
-        out.append(points[-1])
-    return out
+        index, offset = _furthest_from_chord(points, first, last)
+        if offset > tolerance_nm:
+            keep[index] = True
+            stack.append((first, index))
+            stack.append((index, last))
+    return [point for point, wanted in zip(points, keep) if wanted]
 
 
 #: How far from a threshold to look for a holding point.
